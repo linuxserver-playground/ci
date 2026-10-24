@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
 import pytest
-
-FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
 LAYER_A = "sha256:" + "a" * 64
 LAYER_B = "sha256:" + "b" * 64
@@ -222,7 +219,3 @@ def s6_tree(tmp_path: Path) -> Path:
     (root / "notaunit").mkdir()
     (root / "README").write_text("stray file\n")
     return root
-
-
-def load_json(name: str) -> Any:
-    return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
