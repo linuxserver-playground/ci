@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import logging
 import tarfile
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -148,6 +149,53 @@ def copy_from_image(client: DockerClient, ref: str, src: str, dest: Path) -> boo
     except (DockerException, tarfile.TarError, OSError) as err:
         logger.warning("could not copy %s from %s: %s", src, ref, err)
         return False
+    finally:
+        if container is not None:
+            remove_container(container)
+
+
+class _ChunkReader(io.RawIOBase):
+    """Adapts a generator of bytes chunks to a readable file object for streaming tarfile parsing."""
+
+    def __init__(self, chunks: Iterator[bytes]) -> None:
+        super().__init__()
+        self._chunks = chunks
+        self._buffer = b""
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, target: Any) -> int:
+        while not self._buffer:
+            try:
+                self._buffer = next(self._chunks)
+            except StopIteration:
+                return 0
+        size = min(len(target), len(self._buffer))
+        target[:size] = self._buffer[:size]
+        self._buffer = self._buffer[size:]
+        return size
+
+
+def export_hardlinks(client: DockerClient, ref: str) -> dict[str, str] | None:
+    """{path: target} for every hardlink entry in the image's root filesystem, read by streaming `docker export`.
+
+    syft resolves hardlinks to regular files that share a digest, which is indistinguishable from identical
+    content; the tar typeflag is exact. Returns None when the export cannot be read."""
+    container = None
+    try:
+        container = client.containers.create(ref)
+        chunks: Iterator[bytes] = client.api.export(str(container.id), chunk_size=1 << 20)
+        reader = io.BufferedReader(_ChunkReader(chunks), 1 << 20)
+        links: dict[str, str] = {}
+        with tarfile.open(fileobj=reader, mode="r|") as tar:
+            for member in tar:
+                if member.islnk():
+                    links["/" + member.name.lstrip("/")] = "/" + member.linkname.lstrip("/")
+        return links
+    except (DockerException, tarfile.TarError, OSError) as err:
+        logger.warning("could not scan %s for hardlinks: %s", ref, err)
+        return None
     finally:
         if container is not None:
             remove_container(container)

@@ -23,6 +23,7 @@ from .docker_client import (
     container_logs,
     copy_from_image,
     engine_version,
+    export_hardlinks,
     image_history,
     inspect_image,
     remove_container,
@@ -223,10 +224,12 @@ class Run:
         def do_files() -> str:
             if self.syft is None:
                 raise RuntimeError(f"no syft output: {self.syft_error}")
-            entries = files.build_file_entries(self.syft.data, layers.diff_ids(self.inspect))
+            links = export_hardlinks(self.client, self.settings.image)
+            entries = files.build_file_entries(self.syft.data, layers.diff_ids(self.inspect), links)
             packages.write_syft_json(entries, self.asset("files.<arch>.json.gz"))
             hardlinks = sum(1 for e in entries if e["type"] == "hardlink")
-            return f"{len(entries)} entries, {hardlinks} hardlinks, {files.total_size(entries)} bytes of regular files"
+            how = "from the export tar" if links is not None else "by shared digest"
+            return f"{len(entries)} entries, {hardlinks} hardlinks {how}, {files.total_size(entries)} bytes of files"
 
         self.step("File tree", do_files)
 

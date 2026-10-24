@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
 from typing import Any
 
 TYPE_MAP = {
@@ -50,9 +49,14 @@ def _purl_by_file(data: dict[str, Any]) -> dict[str, str]:
     return owner
 
 
-def build_file_entries(data: dict[str, Any], diff_ids: list[str]) -> list[dict[str, Any]]:
-    """One file_entry per syft file record. Regular files that share (layer, sha256) are hardlinks of each other:
-    the first path (sorted) stays `file`, the rest become `hardlink` pointing at it so sizes are not double counted."""
+def build_file_entries(
+    data: dict[str, Any], diff_ids: list[str], hardlinks: dict[str, str] | None = None
+) -> list[dict[str, Any]]:
+    """One file_entry per syft file record.
+
+    syft reports hardlinks as regular files sharing a digest, so they are re-typed here so sizes are not double
+    counted. `hardlinks` ({path: target} from the tar typeflags) is exact and used when given; without it, regular
+    files that share (layer, sha256) are assumed to be hardlinks of the first path in sorted order."""
     layer_index = {diff_id: i for i, diff_id in enumerate(diff_ids)}
     owner = _purl_by_file(data)
     entries: list[dict[str, Any]] = []
@@ -92,21 +96,30 @@ def build_file_entries(data: dict[str, Any], diff_ids: list[str]) -> list[dict[s
             entry["_sha256"] = digest
         entries.append(entry)
     entries.sort(key=lambda e: str(e["path"]))
-    _dedupe_hardlinks(entries)
+    if hardlinks is None:
+        _dedupe_by_digest(entries)
+    else:
+        _apply_hardlinks(entries, hardlinks)
     for entry in entries:
         entry.pop("_sha256", None)
     return entries
 
 
-def _dedupe_hardlinks(entries: list[dict[str, Any]]) -> None:
+def _apply_hardlinks(entries: list[dict[str, Any]], hardlinks: dict[str, str]) -> None:
+    for entry in entries:
+        target = hardlinks.get(str(entry["path"]))
+        if target and entry["type"] == "file":
+            entry["type"] = "hardlink"
+            entry["link_target"] = target
+
+
+def _dedupe_by_digest(entries: list[dict[str, Any]]) -> None:
     seen: dict[tuple[int, str], str] = {}
-    groups: defaultdict[tuple[int, str], int] = defaultdict(int)
     for entry in entries:
         sha = entry.get("_sha256")
         if entry["type"] != "file" or not sha or not entry.get("size"):
             continue
         key = (int(entry["layer"]), sha)
-        groups[key] += 1
         first = seen.get(key)
         if first is None:
             seen[key] = str(entry["path"])
