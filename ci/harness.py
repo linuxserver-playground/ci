@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, TypeVar
 
 from docker import DockerClient
+from docker.errors import DockerException
 from docker.models.containers import Container
 
 from . import __version__, browser, checks, files, initgraph, layers, packages, probe, startup
@@ -123,7 +124,15 @@ class Run:
 
     def run_container_tests(self) -> None:
         env = {"S6_VERBOSITY": "2", **self.manifest.test.env}
-        container = run_container(self.client, self.settings.image, env)
+        try:
+            container = run_container(self.client, self.settings.image, env)
+        except DockerException as err:
+            logger.error("could not start the container: %s", err)
+            self.record("Container startup", "FAIL", f"could not start the container: {err}")
+            self.record("Runtime probe", "SKIP", "container was not started")
+            self.record("Take screenshot", "SKIP", "container was not started")
+            self.run_syft()
+            return
         logger.info("started container %s", container.short_id)
         try:
             with ThreadPoolExecutor(max_workers=2, thread_name_prefix="ci") as pool:
@@ -158,14 +167,20 @@ class Run:
             reason = "SCREENSHOT=false" if self.manifest.test.web else "manifest has no test.web"
             self.record("Take screenshot", "SKIP", reason)
             return
-        ip = container_ip(container)
-        if not ip:
-            self.record("Take screenshot", "FAIL", "container has no IP address")
+        start = time.monotonic()
+        try:
+            ip = container_ip(container)
+            if not ip:
+                self.record("Take screenshot", "FAIL", "container has no IP address")
+                return
+            url = f"{web.scheme}://{ip}:{web.port}{web.path}"
+            shot = browser.take_screenshot(
+                url, self.work / "screenshot.png", web.auth, web.screenshot_delay, web.screenshot_timeout
+            )
+        except Exception as err:
+            logger.exception("screenshot failed")
+            self.record("Take screenshot", "FAIL", f"{type(err).__name__}: {err}", time.monotonic() - start)
             return
-        url = f"{web.scheme}://{ip}:{web.port}{web.path}"
-        shot = browser.take_screenshot(
-            url, self.work / "screenshot.png", web.auth, web.screenshot_delay, web.screenshot_timeout
-        )
         if shot.browser_log:
             (self.work / "browser.log").write_text(shot.browser_log, encoding="utf-8")
         self.record("Take screenshot", "PASS" if shot.success else "FAIL", shot.message, shot.seconds)
