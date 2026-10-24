@@ -35,8 +35,8 @@ def clean_created_by(created_by: str) -> str:
     text = created_by.strip()
     if text.endswith("# buildkit"):
         text = text[: -len("# buildkit")].rstrip()
-    if text.startswith("/bin/sh -c #(nop) "):
-        text = text[len("/bin/sh -c #(nop) ") :]
+    if text.startswith("/bin/sh -c #(nop)"):
+        text = text[len("/bin/sh -c #(nop)") :].strip()
     elif text.startswith("/bin/sh -c "):
         text = "RUN " + text[len("/bin/sh -c ") :]
     return text

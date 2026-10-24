@@ -40,12 +40,15 @@ line-length = 120
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E501"]
+
 [tool.mypy]
 strict = true
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
-module = ["docker", "docker.*"]
+module = ["docker", "docker.*", "contracts"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

@@ -107,7 +107,7 @@ def rfc3339(moment: datetime) -> str:
 def validate_report(record: dict[str, Any]) -> list[str]:
     """Schema violations as strings; empty when valid or when the contracts package is not installed."""
     try:
-        from contracts import errors, format_error  # type: ignore[import-untyped]
+        from contracts import errors, format_error
     except ImportError:
         logger.debug("contracts package not installed; skipping schema validation")
         return []
