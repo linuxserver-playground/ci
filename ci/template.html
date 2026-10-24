@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>CI {{ name }}:{{ tag }} {{ arch }}</title>
+  <meta name="description" content="CI: {{ 'PASS' if success else 'FAIL' }}">
+  <meta name="author" content="linuxserver.io">
+  <meta name="theme-color" content="#da3b8a">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    :root {
+      --brand-primary: #da3b8a;
+      --brand-hover: #bc3478;
+      --success: #10b981;
+      --danger: #ef4444;
+      --warning: #f59e0b;
+      --muted-status: #94a3b8;
+      --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      --font-mono: ui-monospace, "Fira Code", "SFMono-Regular", Menlo, monospace;
+      --radius-sm: 6px;
+      --radius-md: 12px;
+      --radius-lg: 16px;
+      --bg-main: #0f172a;
+      --bg-card: #1e293b;
+      --bg-code: #0b1120;
+      --bg-hover: #334155;
+      --text-main: #f8fafc;
+      --text-muted: #94a3b8;
+      --border-color: #334155;
+      --shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+    }
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg-main: #f1f5f9;
+        --bg-card: #ffffff;
+        --bg-code: #f8fafc;
+        --bg-hover: #e2e8f0;
+        --text-main: #0f172a;
+        --text-muted: #64748b;
+        --border-color: #cbd5e1;
+        --shadow: 0 4px 20px rgba(0, 0, 0, 0.05);
+      }
+    }
+    * { box-sizing: border-box; }
+    body, html {
+      padding: 0; margin: 0;
+      background-color: var(--bg-main); color: var(--text-main);
+      font-family: var(--font-sans); font-size: 16px; line-height: 1.5;
+    }
+    a { color: var(--brand-primary); text-decoration: none; }
+    a:hover { color: var(--brand-hover); }
+    #app { display: flex; flex-direction: column; align-items: center; padding: 1rem; max-width: 1400px; margin: 0 auto; }
+    header h1 { font-size: clamp(2rem, 5vw, 3rem); letter-spacing: 2px; font-weight: 800; margin: 0.5rem 0; text-align: center; }
+    header h1 span { color: var(--brand-primary); }
+    .dashboard-header { text-align: center; margin-bottom: 1rem; }
+    .dashboard-title { font-size: 1rem; font-weight: 700; margin: 0 0 1rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1px; }
+    .pull-command-wrapper {
+      background: var(--bg-code); border: 1px solid var(--border-color); border-radius: var(--radius-md);
+      padding: 0.75rem 1.25rem; display: inline-flex; align-items: center; gap: 1rem; box-shadow: var(--shadow); margin-bottom: 1rem;
+    }
+    #pull-cmd { font-family: var(--font-mono); font-size: 0.95rem; color: var(--text-main); }
+    .status-badge {
+      display: inline-flex; align-items: center; gap: 0.5rem; padding: 0.25rem 0.75rem; border-radius: 999px;
+      font-weight: 700; font-size: 0.875rem; text-transform: uppercase; letter-spacing: 0.5px;
+    }
+    .status-pass { background-color: rgba(16, 185, 129, 0.15); color: var(--success); border: 1px solid rgba(16, 185, 129, 0.3); }
+    .status-fail { background-color: rgba(239, 68, 68, 0.15); color: var(--danger); border: 1px solid rgba(239, 68, 68, 0.3); }
+    .cumulative-status { font-size: 1.25rem; font-weight: 600; margin-bottom: 0.5rem; display: flex; align-items: center; justify-content: center; gap: 0.75rem; }
+    .total-runtime { color: var(--text-muted); font-size: 0.95rem; }
+    main { width: 100%; margin-top: 0.5rem; }
+    section {
+      background: var(--bg-card); border: 1px solid var(--border-color); border-radius: var(--radius-lg);
+      box-shadow: var(--shadow); overflow: hidden; display: flex; flex-direction: column; width: 100%;
+    }
+    .card-header { padding: 1.25rem 1.5rem; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; }
+    .card-title { font-size: 1.25rem; font-weight: 700; margin: 0; word-break: break-all; }
+    .platform-tag { font-family: var(--font-mono); font-size: 0.85rem; color: var(--text-muted); background: var(--bg-code); padding: 0.25rem 0.5rem; border-radius: var(--radius-sm); border: 1px solid var(--border-color); }
+    .card-header-right { display: flex; flex-direction: column; align-items: flex-end; gap: 0.5rem; flex-shrink: 0; }
+    .screenshot-container { width: 100%; background: var(--bg-code); border-bottom: 1px solid var(--border-color); }
+    .screenshot-container img { width: 100%; height: auto; display: block; }
+    .no-screenshot { padding: 2rem 1rem; text-align: center; color: var(--text-muted); font-weight: 500; }
+    .build-info-grid { display: flex; flex-wrap: wrap; gap: 0.5rem 1.5rem; padding: 1rem 1.5rem; border-bottom: 1px solid var(--border-color); }
+    .build-info-item { display: flex; align-items: baseline; gap: 0.4rem; max-width: 100%; }
+    .build-info-label { font-size: 0.75rem; text-transform: uppercase; color: var(--text-muted); font-weight: 600; letter-spacing: 0.5px; }
+    .build-info-label::after { content: ":"; }
+    .build-info-value { font-family: var(--font-mono); font-size: 0.85rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .details-group { padding: 1rem 1.5rem; display: flex; flex-direction: column; gap: 0.75rem; }
+    details { background: var(--bg-code); border: 1px solid var(--border-color); border-radius: var(--radius-md); overflow: hidden; }
+    summary { padding: 1rem; cursor: pointer; font-weight: 600; display: flex; align-items: center; justify-content: space-between; user-select: none; list-style: none; }
+    summary::-webkit-details-marker { display: none; }
+    summary::after {
+      content: ''; display: inline-block; width: 7px; height: 7px; border-right: 2px solid var(--text-muted); border-bottom: 2px solid var(--text-muted);
+      transform: translateY(-2px) rotate(45deg); transition: transform 0.3s ease; margin-right: 4px;
+    }
+    details[open] summary::after { transform: translateY(2px) rotate(225deg); }
+    summary:hover { background: var(--bg-hover); }
+    .summary-content { border-top: 1px solid var(--border-color); background: var(--bg-card); }
+    pre { margin: 0; padding: 1.25rem; font-family: var(--font-mono); font-size: 0.85rem; overflow-x: auto; max-height: 400px; overflow-y: auto; line-height: 1.5; }
+    .warning-box { background: rgba(245, 158, 11, 0.1); border-left: 4px solid var(--warning); padding: 1rem; margin: 0.5rem 1rem 1rem; border-radius: 0 var(--radius-sm) var(--radius-sm) 0; }
+    .warning-text { color: var(--warning); font-family: var(--font-mono); font-size: 0.85rem; margin: 0; }
+    .table-container { padding: 1.5rem; overflow-x: auto; }
+    .styled-table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 0.9rem; border: 1px solid var(--border-color); border-radius: var(--radius-md); overflow: hidden; }
+    .styled-table thead tr { background-color: var(--bg-code); text-align: left; }
+    .styled-table th { font-weight: 600; text-transform: uppercase; font-size: 0.75rem; letter-spacing: 0.5px; color: var(--text-muted); border-bottom: 1px solid var(--border-color); }
+    .styled-table th, .styled-table td { padding: 0.75rem 1rem; word-wrap: break-word; }
+    .styled-table tbody tr:not(:last-child) td { border-bottom: 1px solid var(--border-color); }
+    .styled-table tbody tr:hover { background-color: var(--bg-hover); }
+    .result-cell { font-weight: 600; }
+    .result-PASS { color: var(--success); }
+    .result-FAIL { color: var(--danger); }
+    .result-WARN { color: var(--warning); }
+    .result-SKIP { color: var(--muted-status); }
+    .mono { font-family: var(--font-mono); font-size: 0.85rem; }
+    .muted { color: var(--text-muted); font-size: 0.9rem; }
+    .runtime-grid { display: flex; flex-wrap: wrap; gap: 0.5rem 1.5rem; padding: 1rem 1.5rem; }
+    @media only screen and (max-width: 768px) {
+      .card-header, .build-info-grid, .details-group, .table-container, .runtime-grid { padding: 1rem; }
+    }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <header><h1>Linux<span>Server</span>.io</h1></header>
+
+    <div class="dashboard-header">
+      <h2 class="dashboard-title">CI test results</h2>
+      <div class="pull-command-wrapper"><code id="pull-cmd">docker pull {{ image }}</code></div>
+      <div class="cumulative-status">
+        Status:
+        {% if success %}<span class="status-badge status-pass">PASS</span>{% else %}<span class="status-badge status-fail">FAIL</span>{% endif %}
+      </div>
+      <div class="total-runtime">Total runtime: {{ total_runtime }} &middot; ci {{ ci_version }}</div>
+    </div>
+
+    <main>
+      <section>
+        <div class="card-header">
+          <div>
+            <h3 class="card-title">{{ name }}:{{ tag }}</h3>
+            {% if startup_seconds is not none %}<div class="muted">Init done after {{ "%.1f"|format(startup_seconds) }}s</div>{% endif %}
+          </div>
+          <div class="card-header-right">
+            <span class="platform-tag">{{ arch }}</span>
+            {% if success %}<span class="status-badge status-pass">PASS</span>{% else %}<span class="status-badge status-fail">FAIL</span>{% endif %}
+          </div>
+        </div>
+
+        <div class="screenshot-container">
+          {% if screenshot %}
+          <a href="screenshot.png" target="_blank"><img src="screenshot.png" alt="Screenshot of {{ name }} web UI"></a>
+          {% else %}
+          <div class="no-screenshot">No screenshot for this run</div>
+          {% endif %}
+        </div>
+
+        <div class="build-info-grid">
+          {% for key, value in build_info.items() %}
+          <div class="build-info-item" title="{{ value }}">
+            <span class="build-info-label">{{ key }}</span>
+            <span class="build-info-value">{{ value }}</span>
+          </div>
+          {% endfor %}
+        </div>
+
+        {% if runtime %}
+        <div class="runtime-grid">
+          {% if runtime.pids is defined %}<div class="build-info-item"><span class="build-info-label">pids</span><span class="build-info-value">{{ runtime.pids }}</span></div>{% endif %}
+          {% if runtime.rss_bytes is defined %}<div class="build-info-item"><span class="build-info-label">rss</span><span class="build-info-value">{{ "%.1f"|format(runtime.rss_bytes / 1048576) }} MiB</span></div>{% endif %}
+          <div class="build-info-item"><span class="build-info-label">tcp</span><span class="build-info-value">{{ runtime.listening_tcp | join(", ") or "-" }}</span></div>
+          <div class="build-info-item"><span class="build-info-label">udp</span><span class="build-info-value">{{ runtime.listening_udp | join(", ") or "-" }}</span></div>
+          <div class="build-info-item"><span class="build-info-label">services</span><span class="build-info-value">{{ runtime.s6_services | join(", ") or "-" }}</span></div>
+          {% if runtime.changed_paths is defined %}<div class="build-info-item"><span class="build-info-label">changed paths</span><span class="build-info-value">{{ runtime.changed_paths }}</span></div>{% endif %}
+        </div>
+        {% endif %}
+
+        <div class="table-container">
+          <table class="styled-table">
+            <thead><tr><th>Test</th><th>Result</th><th>Message</th><th>Seconds</th></tr></thead>
+            <tbody>
+              {% for test in tests %}
+              <tr>
+                <td style="font-weight: 500;">{{ test.name }}</td>
+                <td><span class="result-cell result-{{ test.status }}">{{ test.status }}</span></td>
+                <td class="mono">{{ test.message | default("-", true) }}</td>
+                <td class="muted">{{ "%.1f"|format(test.seconds) if test.seconds is defined else "-" }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+
+        <div class="details-group">
+          {% if warnings %}
+          <details open style="border-color: var(--warning);">
+            <summary style="color: var(--warning);">Warnings</summary>
+            <div class="summary-content" style="padding-top: 1rem;">
+              {% for key, text in warnings.items() %}
+              <div class="warning-box"><p class="warning-text">{{ key }}: {{ text }}</p></div>
+              {% endfor %}
+            </div>
+          </details>
+          {% endif %}
+
+          <details>
+            <summary>Container log</summary>
+            <div class="summary-content"><pre><code>{{ container_log }}</code></pre></div>
+          </details>
+
+          <details>
+            <summary>Packages</summary>
+            <div class="summary-content"><pre><code>{{ package_table }}</code></pre></div>
+          </details>
+
+          {% if package_diff %}
+          <details>
+            <summary>Package changes since the previous release</summary>
+            <div class="summary-content"><pre><code>{{ package_diff }}</code></pre></div>
+          </details>
+          {% endif %}
+
+          {% if sysinfo %}
+          <details>
+            <summary>System information</summary>
+            <div class="summary-content"><pre><code>{{ sysinfo }}</code></pre></div>
+          </details>
+          {% endif %}
+
+          {% if browser_log %}
+          <details>
+            <summary>Browser console log</summary>
+            <div class="summary-content"><pre><code>{{ browser_log }}</code></pre></div>
+          </details>
+          {% endif %}
+        </div>
+      </section>
+    </main>
+  </div>
+</body>
+</html>

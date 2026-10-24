@@ -1,0 +1,53 @@
+[project]
+name = "lsio-ci"
+version = "2.0.0"
+description = "The LinuxServer v2 container test harness: runs one image on one architecture and writes the bundle assets."
+readme = "README.md"
+requires-python = ">=3.13"
+license = "GPL-3.0-only"
+dependencies = [
+  "docker==7.2.0",
+  "jinja2==3.1.6",
+  "pydantic==2.14.1",
+  "requests==2.34.2",
+  "selenium==4.51.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "lsio-builder @ git+https://github.com/linuxserver-playground/builder@main",
+  "mypy==2.4.0",
+  "pytest==9.1.1",
+  "pytest-mock==3.17.0",
+  "ruff==0.17.2",
+  "types-docker==7.2.0.20261006",
+  "types-requests==2.33.0.20261006",
+]
+
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["ci"]
+
+[tool.setuptools.package-data]
+ci = ["template.html"]
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.mypy]
+strict = true
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["docker", "docker.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["integration: runs the whole harness against a real Docker daemon"]
