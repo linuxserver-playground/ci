@@ -230,7 +230,7 @@ class Run:
 
     def static_outputs(self) -> None:
         labels: dict[str, str] = dict(self.inspect.get("Config", {}).get("Labels") or {})
-        base = layers.find_base_image(self.client, self.inspect, labels, self.manifest.build.base)
+        base = layers.find_base_image(self.client, self.inspect, labels, self.manifest.build.base, self.arch)
         base_ref = base[0] if base else None
         logger.info("base image: %s", base_ref or "not found locally")
 

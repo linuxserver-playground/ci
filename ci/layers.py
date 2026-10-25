@@ -109,11 +109,13 @@ def base_image_ref(labels: dict[str, str], base_family: str) -> str | None:
 
 
 def find_base_image(
-    client: DockerClient, inspect: dict[str, Any], labels: dict[str, str], base_family: str
+    client: DockerClient, inspect: dict[str, Any], labels: dict[str, str], base_family: str, arch: str = ""
 ) -> tuple[str, dict[str, Any]] | None:
-    """The local image whose layers are the longest proper prefix of this image's layers.
+    """The image whose layers are the longest proper prefix of this image's layers.
 
-    The labelled FROM reference is tried first; every local `baseimage-*` tag is a candidate after that."""
+    The labelled FROM reference is tried first; every local `baseimage-*` tag is a candidate after that. The
+    build never loads its base into the local store, so the labelled reference is finally read from the
+    registry: only its config, pinned to the digest the build recorded."""
     ids = diff_ids(inspect)
     candidates: list[str] = []
     labelled = base_image_ref(labels, base_family)
@@ -128,9 +130,51 @@ def find_base_image(
         if not attrs or attrs.get("Id") == inspect.get("Id"):
             continue
         base_ids = diff_ids(attrs)
-        if base_ids and len(base_ids) < len(ids) and ids[: len(base_ids)] == base_ids and len(base_ids) > best_len:
+        if _is_prefix(base_ids, ids) and len(base_ids) > best_len:
             best, best_len = (ref, attrs), len(base_ids)
+    if best is None and labelled and arch:
+        pinned = labels.get("io.linuxserver.image.base", "").strip() or labelled
+        base_ids = registry_diff_ids(pinned, arch) or []
+        if _is_prefix(base_ids, ids):
+            best = (labelled, {"RootFS": {"Layers": base_ids}})
     return best
+
+
+def _is_prefix(base_ids: list[str], ids: list[str]) -> bool:
+    return bool(base_ids) and len(base_ids) < len(ids) and ids[: len(base_ids)] == base_ids
+
+
+def registry_diff_ids(image: str, arch: str, timeout: int = 60) -> list[str] | None:
+    """The layer diff_ids of `image` for `arch`, from its config in the registry (a few KB, no pull)."""
+    docker_cli = shutil.which("docker")
+    if not docker_cli:
+        return None
+    try:
+        proc = subprocess.run(
+            [docker_cli, "buildx", "imagetools", "inspect", image, "--format", "{{json .Image}}"],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        logger.info("registry config for %s not available: %s", image, proc.stderr.strip()[:200])
+        return None
+    try:
+        parsed: dict[str, Any] = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return None
+    # A multi-arch index maps "linux/<arch>[/<variant>]" to each config; a single image is the config itself.
+    config = (
+        parsed
+        if "rootfs" in parsed
+        else next((v for k, v in parsed.items() if k == f"linux/{arch}" or k.startswith(f"linux/{arch}/")), None)
+    )
+    if not isinstance(config, dict):
+        return None
+    return [str(d) for d in config.get("rootfs", {}).get("diff_ids") or []] or None
 
 
 def registry_manifest_layers(image: str, arch: str, timeout: int = 60) -> list[dict[str, Any]] | None:

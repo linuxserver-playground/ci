@@ -102,7 +102,7 @@ def patched(
     monkeypatch.setattr(
         layers,
         "find_base_image",
-        lambda client, inspect, labels, base: (
+        lambda client, inspect, labels, base, arch: (
             "ghcr.io/linuxserver/baseimage-alpine:3.22",
             {"Id": "x", "RootFS": {"Layers": inspect["RootFS"]["Layers"][:2]}},
         ),

@@ -1,7 +1,20 @@
+import json
+import subprocess
 from typing import Any
 from unittest.mock import MagicMock
 
-from ci.layers import base_image_ref, build_layers, clean_created_by, find_base_image, match_history
+import pytest
+from docker.errors import ImageNotFound
+
+from ci import layers as layers_module
+from ci.layers import (
+    base_image_ref,
+    build_layers,
+    clean_created_by,
+    find_base_image,
+    match_history,
+    registry_diff_ids,
+)
 from tests.conftest import LAYER_A, LAYER_B, LAYER_C
 
 
@@ -101,3 +114,52 @@ def test_find_base_image_prefers_longest_prefix(
     assert found is not None
     assert found[0] == "ghcr.io/linuxserver/baseimage-alpine:3.22"
     assert find_base_image(client, short, {}, "alpine") is None
+
+
+def test_find_base_image_reads_the_pinned_base_from_the_registry(
+    inspect_record: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = MagicMock()
+    client.images.list.return_value = []
+    client.images.get.side_effect = ImageNotFound("not local")
+    pinned = "ghcr.io/linuxserver/baseimage-alpine:3.22@sha256:" + "f" * 64
+    seen: list[tuple[str, str]] = []
+
+    def fake(image: str, arch: str) -> list[str]:
+        seen.append((image, arch))
+        return list(inspect_record["RootFS"]["Layers"][:2])
+
+    monkeypatch.setattr(layers_module, "registry_diff_ids", fake)
+    found = find_base_image(client, inspect_record, {"io.linuxserver.image.base": pinned}, "alpine", "arm64")
+    assert found is not None
+    assert found[0] == "ghcr.io/linuxserver/baseimage-alpine:3.22"
+    assert found[1]["RootFS"]["Layers"] == inspect_record["RootFS"]["Layers"][:2]
+    assert seen == [(pinned, "arm64")]
+    layers = build_layers(inspect_record, [], found[1])
+    assert [layer["from_base"] for layer in layers] == [True, True, False]
+
+
+@pytest.mark.parametrize(
+    ("payload", "arch", "expected"),
+    [
+        (
+            {
+                "linux/amd64": {"rootfs": {"diff_ids": ["sha256:a"]}},
+                "linux/arm64/v8": {"rootfs": {"diff_ids": ["sha256:b"]}},
+            },
+            "arm64",
+            ["sha256:b"],
+        ),
+        ({"rootfs": {"diff_ids": ["sha256:c"]}}, "amd64", ["sha256:c"]),
+        ({"linux/amd64": {"rootfs": {"diff_ids": ["sha256:a"]}}}, "arm64", None),
+    ],
+)
+def test_registry_diff_ids(
+    payload: dict[str, Any], arch: str, expected: list[str] | None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("ci.layers.shutil.which", lambda name: "/usr/bin/docker")
+    monkeypatch.setattr(
+        "ci.layers.subprocess.run",
+        lambda *a, **k: subprocess.CompletedProcess(a, 0, stdout=json.dumps(payload), stderr=""),
+    )
+    assert registry_diff_ids("ghcr.io/x/y:1", arch) == expected
