@@ -3,7 +3,7 @@ from typing import Any
 import pytest
 import requests
 
-from ci.packages import diff_text, package_count, package_diff, parse_table
+from ci.packages import diff_text, package_count, package_diff, parse_table, trim
 
 OLD = """NAME                    VERSION           TYPE
 alpine-baselayout       3.7.0-r0          apk
@@ -69,3 +69,15 @@ def test_package_diff_handles_missing_previous(monkeypatch: pytest.MonkeyPatch) 
 def test_package_count(syft_json: dict[str, Any]) -> None:
     assert package_count(syft_json) == 2
     assert package_count({}) == 0
+
+
+def test_trim_keeps_packages_and_drops_file_data(syft_json: dict[str, Any]) -> None:
+    syft_json["artifacts"][0]["metadata"] = {"files": [{"path": "/bin/busybox"}], "originPackage": "busybox"}
+    syft_json["artifactRelationships"].append({"parent": "pkg-nopurl", "child": "pkg-busybox", "type": "dependency-of"})
+    trimmed = trim(syft_json)
+    assert "files" not in trimmed
+    assert [a["name"] for a in trimmed["artifacts"]] == ["busybox", "weird"]
+    assert trimmed["artifacts"][0]["metadata"] == {"originPackage": "busybox"}
+    assert trimmed["artifactRelationships"] == [
+        {"parent": "pkg-nopurl", "child": "pkg-busybox", "type": "dependency-of"}
+    ]

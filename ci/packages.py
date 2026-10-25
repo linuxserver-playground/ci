@@ -1,4 +1,8 @@
-"""syft: the package table, the full JSON with file metadata, and the diff against the previous release."""
+"""syft: the package table, the packages-only JSON and SPDX, and the diff against the previous release.
+
+syft is only asked for packages. Everything it knows about individual files (file records, each package's file
+list, the relationships pointing at files) is dropped: vulnerability matching never reads it, and on desktop
+images it is most of the document. The file tree comes from dumper instead (`dumper.py`)."""
 
 from __future__ import annotations
 
@@ -18,10 +22,12 @@ import requests
 logger = logging.getLogger("packages")
 
 SYFT_ENV = {
-    "SYFT_FILE_METADATA_SELECTION": "all",
-    "SYFT_FILE_METADATA_DIGESTS": "sha256",
+    "SYFT_FILE_METADATA_SELECTION": "none",
     "SYFT_CHECK_FOR_APP_UPDATE": "false",
 }
+# BuildKit's SBOM generator adds this cataloger too: it reads the SBOMs that wheels such as Pillow ship for the
+# libraries they vendor, which would otherwise be invisible to vulnerability scans.
+SYFT_CATALOGERS = "+sbom-cataloger"
 
 
 class SyftError(RuntimeError):
@@ -41,17 +47,34 @@ def syft_binary() -> str:
     return path
 
 
+def trim(doc: dict[str, Any]) -> dict[str, Any]:
+    """The packages-only document: no `files`, no per-package `metadata.files`, and only the package-to-package
+    relationships (`dependency-of`, and `ownership-by-file-overlap`, which grype uses to drop binary packages an
+    OS package owns). Modifies and returns `doc`."""
+    ids = {a.get("id") for a in doc.get("artifacts", [])}
+    for artifact in doc.get("artifacts", []):
+        metadata = artifact.get("metadata")
+        if isinstance(metadata, dict):
+            metadata.pop("files", None)
+    doc["artifactRelationships"] = [
+        r for r in doc.get("artifactRelationships", []) if r.get("parent") in ids and r.get("child") in ids
+    ]
+    doc.pop("files", None)
+    return doc
+
+
 def run_syft(image: str, timeout: int, platform: str | None = None) -> SyftResult:
-    """One syft run producing both the JSON (with file metadata) and the human table."""
+    """One syft run producing both the packages-only JSON and the human table."""
     binary = syft_binary()
     with tempfile.TemporaryDirectory(prefix="syft-") as tmp:
         json_path = Path(tmp) / "sbom.json"
         table_path = Path(tmp) / "table.txt"
-        command = [binary, f"docker:{image}", "-o", f"syft-json={json_path}", "-o", f"table={table_path}", "-q"]
+        command = [binary, f"docker:{image}", "--select-catalogers", SYFT_CATALOGERS]
+        command += ["-o", f"syft-json={json_path}", "-o", f"table={table_path}", "-q"]
         if platform:
             command += ["--platform", platform]
         env = {**os.environ, **SYFT_ENV}
-        logger.info("running %s", " ".join(command[:2] + command[6:]))
+        logger.info("running %s", " ".join(command[:4]))
         try:
             proc = subprocess.run(command, env=env, capture_output=True, text=True, timeout=timeout, check=False)
         except subprocess.TimeoutExpired as err:
@@ -59,7 +82,7 @@ def run_syft(image: str, timeout: int, platform: str | None = None) -> SyftResul
         if proc.returncode != 0:
             raise SyftError(f"syft exited {proc.returncode}: {proc.stderr.strip()[-2000:]}")
         try:
-            data: dict[str, Any] = json.loads(json_path.read_text(encoding="utf-8"))
+            data: dict[str, Any] = trim(json.loads(json_path.read_text(encoding="utf-8")))
             table = table_path.read_text(encoding="utf-8")
         except (OSError, json.JSONDecodeError) as err:
             raise SyftError(f"syft produced unreadable output: {err}") from err
@@ -69,6 +92,23 @@ def run_syft(image: str, timeout: int, platform: str | None = None) -> SyftResul
 def write_syft_json(data: dict[str, Any] | list[Any], path: Path) -> None:
     with gzip.open(path, "wt", encoding="utf-8", compresslevel=6) as fh:
         json.dump(data, fh, separators=(",", ":"))
+
+
+def write_spdx(data: dict[str, Any], path: Path, timeout: int = 300) -> None:
+    """The same packages-only document as SPDX 2.3 JSON (`syft convert`), for the image attestation. The publish
+    job wraps it in the in-toto statement BuildKit uses and attaches it to the released index."""
+    binary = syft_binary()
+    with tempfile.TemporaryDirectory(prefix="syft-") as tmp:
+        source = Path(tmp) / "sbom.json"
+        source.write_text(json.dumps(data, separators=(",", ":")), encoding="utf-8")
+        command = [binary, "convert", str(source), "-o", f"spdx-json={path}", "-q"]
+        env = {**os.environ, **SYFT_ENV}
+        try:
+            proc = subprocess.run(command, env=env, capture_output=True, text=True, timeout=timeout, check=False)
+        except subprocess.TimeoutExpired as err:
+            raise SyftError(f"syft convert timed out after {timeout}s") from err
+        if proc.returncode != 0:
+            raise SyftError(f"syft convert exited {proc.returncode}: {proc.stderr.strip()[-2000:]}")
 
 
 def package_count(data: dict[str, Any]) -> int:

@@ -16,7 +16,7 @@ from docker import DockerClient
 from docker.errors import DockerException
 from docker.models.containers import Container
 
-from . import __version__, browser, checks, files, initgraph, layers, packages, probe, startup
+from . import __version__, browser, checks, dumper, initgraph, layers, packages, probe, startup
 from .config import Settings
 from .docker_client import (
     connect,
@@ -24,7 +24,6 @@ from .docker_client import (
     container_logs,
     copy_from_image,
     engine_version,
-    export_hardlinks,
     image_history,
     inspect_image,
     remove_container,
@@ -175,7 +174,11 @@ class Run:
                 return
             url = f"{web.scheme}://{ip}:{web.port}{web.path}"
             shot = browser.take_screenshot(
-                url, self.work / "screenshot.png", web.auth, web.screenshot_delay, web.screenshot_timeout
+                url,
+                self.work / "screenshot.png",
+                web.auth,
+                self.settings.screenshot_delay,
+                self.settings.screenshot_timeout,
             )
         except Exception as err:
             logger.exception("screenshot failed")
@@ -218,7 +221,12 @@ class Run:
     def _write_sbom(self, data: dict[str, Any]) -> str:
         path = self.asset("packages.<arch>.json.gz")
         packages.write_syft_json(data, path)
-        return f"{len(data.get('files', []))} files with metadata, {path.stat().st_size} bytes gzipped"
+        spdx = self.asset("sbom.<arch>.spdx.json")
+        packages.write_spdx(data, spdx)
+        return (
+            f"{packages.package_count(data)} packages: syft JSON {path.stat().st_size} bytes gzipped, "
+            f"SPDX for the image attestation {spdx.stat().st_size} bytes"
+        )
 
     def static_outputs(self) -> None:
         labels: dict[str, str] = dict(self.inspect.get("Config", {}).get("Labels") or {})
@@ -237,14 +245,7 @@ class Run:
         self.step("Layers", do_layers)
 
         def do_files() -> str:
-            if self.syft is None:
-                raise RuntimeError(f"no syft output: {self.syft_error}")
-            links = export_hardlinks(self.client, self.settings.image)
-            entries = files.build_file_entries(self.syft.data, layers.diff_ids(self.inspect), links)
-            packages.write_syft_json(entries, self.asset("files.<arch>.json.gz"))
-            hardlinks = sum(1 for e in entries if e["type"] == "hardlink")
-            how = "from the export tar" if links is not None else "by shared digest"
-            return f"{len(entries)} entries, {hardlinks} hardlinks {how}, {files.total_size(entries)} bytes of files"
+            return dumper.file_tree(self.client, self.settings.image, self.asset("files.<arch>.json.gz"))
 
         self.step("File tree", do_files)
 

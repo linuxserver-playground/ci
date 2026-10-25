@@ -1,4 +1,4 @@
-"""The whole harness, in-process, against the Alpine base image. Needs a Docker daemon and syft on PATH."""
+"""The whole harness, in-process, against the Alpine base image. Needs a Docker daemon, syft and dumper."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ import pytest
 from contracts import validate
 
 from ci.config import load_settings
+from ci.dumper import DumperError, dumper_binary
 from ci.harness import run
 
 IMAGE = "ghcr.io/linuxserver/baseimage-alpine:3.22"
@@ -29,6 +30,7 @@ EXPECTED = [
     "layers.amd64.json",
     "package_versions.amd64.txt",
     "packages.amd64.json.gz",
+    "sbom.amd64.spdx.json",
     "test.amd64.json",
     "test.amd64.tar.gz",
 ]
@@ -50,6 +52,10 @@ def docker_ready() -> bool:
 def test_whole_harness_against_the_base_image(tmp_path: Path) -> None:
     if shutil.which("syft") is None:
         pytest.skip("syft is not on PATH")
+    try:
+        dumper_binary()
+    except DumperError:
+        pytest.skip("dumper is not on PATH and DUMPER is not set")
     if not docker_ready():
         pytest.skip("Docker daemon not reachable or image pull failed")
     out = tmp_path / "out"
@@ -79,12 +85,15 @@ def test_whole_harness_against_the_base_image(tmp_path: Path) -> None:
     assert [layer["diff_id"] for layer in layers] == inspect["RootFS"]["Layers"]
     with gzip.open(out / "files.amd64.json.gz") as fh:
         files = json.load(fh)
-    assert any(f["path"] == "/bin/busybox" and f["executable"] for f in files)
-    assert max(f["layer"] for f in files) < len(layers)
+    assert files["format"] == "lsio-files/1"
+    bin_dir = next(c for c in files["tree"]["c"] if c["n"] == "bin")
+    assert any(c["n"] == "busybox" and c.get("m") == 0o755 and c.get("s") for c in bin_dir["c"])
+    assert not any(c["n"] == ".lsio-dumper" for c in files["tree"]["c"])
     graph = json.loads((out / "init-graph.amd64.json").read_text())
     assert graph["d2"].startswith('"baseimage-alpine:3.22": {')
     assert {u["name"] for u in graph["units"]} >= {"init-adduser", "svc-cron", "user"}
     with gzip.open(out / "packages.amd64.json.gz") as fh:
         packages = json.load(fh)
-    assert packages["artifacts"] and packages["files"]
+    assert packages["artifacts"] and "files" not in packages
+    assert json.loads((out / "sbom.amd64.spdx.json").read_text())["spdxVersion"] == "SPDX-2.3"
     assert "busybox" in (out / "package_versions.amd64.txt").read_text()

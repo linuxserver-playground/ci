@@ -20,6 +20,7 @@ docker run --rm \
   -e MODE="live|dev|pr" \
   -e MANIFEST_JSON="<image.yml as compact JSON>" \
   -e PREVIOUS_PACKAGES_URL="<optional URL of the previous release's package_versions.<arch>.txt>" \
+  -v "$DUMPER":/usr/local/bin/dumper:ro \
   ghcr.io/linuxserver-playground/ci:latest
 ```
 
@@ -34,11 +35,14 @@ docker run --rm \
 | `SYFT_TIMEOUT` | no | Seconds for the syft run. Default `test.sbom_timeout` or 900. |
 | `STARTUP_TIMEOUT` | no | Overrides `test.startup_timeout` (seconds to wait for `[ls.io-init] done.`). |
 | `SCREENSHOT` | no | `false` skips the browser even when the manifest has `test.web`. |
+| `DUMPER` | no | Path of the [dumper](https://github.com/linuxserver-playground/dumper) binary for the file tree. Default `dumper` on `PATH`; the workflow mounts the latest release at `/usr/local/bin/dumper`. |
 
 From the manifest: `test.enabled` (false records the container tests as SKIP and still produces every static
 asset), `test.startup_timeout`, `test.env` (extra environment for the container; `S6_VERBOSITY=2` is always
 set), `test.web` (`port`, `path`, `scheme`, `auth`, `screenshot_delay`, `screenshot_timeout`) and
-`test.sbom_timeout`.
+`test.sbom_timeout`. Desktop bases (`build.base` `selkies`, `kasmvnc` or `rdesktop`) draw their session after
+the page loads, so the screenshot waits at least 30 s on amd64 and 90 s on arm64 whatever `screenshot_delay`
+says, and `screenshot_timeout` is raised to at least the delay plus 60 s.
 
 Exit code is `0` whenever the harness ran, even if tests failed: the verdict is `success` in
 `test.<arch>.json`. It is `1` when the harness itself could not work (no Docker daemon, image missing,
@@ -52,8 +56,9 @@ Everything goes to `/out`. Names are fixed; `<arch>` is `ARCH`.
 | --- | --- | --- |
 | `test.<arch>.json` | `test-report.schema.json` | Tests, `success`, `startup_seconds`, `warnings`, `runtime` block, `files` (paths inside the tarball). |
 | `test.<arch>.tar.gz` | | `index.html` (the report), `container.log`, `sysinfo.txt`, `package_diff.txt`, `screenshot.png` and `browser.log` when a web test ran. |
-| `packages.<arch>.json.gz` | syft JSON | `syft docker:<IMAGE> -o syft-json` with `SYFT_FILE_METADATA_SELECTION=all SYFT_FILE_METADATA_DIGESTS=sha256`. |
-| `files.<arch>.json.gz` | `bundle.schema.json` `$defs/file_entry` (array) | One entry per file from the syft JSON: layer index, type, size, mode, uid/gid, 16-hex digest, link target, owning package purl, mime, executable. |
+| `packages.<arch>.json.gz` | syft JSON | Packages only: `syft docker:<IMAGE> --select-catalogers +sbom-cataloger -o syft-json` with `SYFT_FILE_METADATA_SELECTION=none`, then trimmed of every file record, per-package file list and file relationship. |
+| `sbom.<arch>.spdx.json` | SPDX 2.3 | The same packages-only document converted with `syft convert`. Not a Release asset: the publish job attaches it to the image as its SBOM attestation. |
+| `files.<arch>.json.gz` | `bundle.schema.json` `$defs/file_tree` | `dumper files` run inside the image (format `lsio-files/1`): a nested tree with names, types, sizes, link targets, permissions and owners. |
 | `layers.<arch>.json` | `bundle.schema.json` `$defs/layer` (array) | One per `RootFS.Layers` entry: diff_id, `created_by` from `docker history`, uncompressed size, `from_base`, `empty`, and compressed digest/size when the registry knows the image. |
 | `package_versions.<arch>.txt` | text | `syft -o table`: the same shape as today's `package_versions.txt`. |
 | `image-config.<arch>.json` | | `docker image inspect` as a single object. |
@@ -83,29 +88,28 @@ docker run --rm \
 tar xzf out/test.amd64.tar.gz -C out && xdg-open out/index.html
 ```
 
-Running the Python directly (needs `syft` on `PATH`, and Chrome plus `chromedriver` for web tests):
+Running the Python directly (needs `syft` and `dumper` on `PATH`, and Chrome plus `chromedriver` for web tests):
 
 ```bash
 python3 -m venv .venv && . .venv/bin/activate
 pip install -e '.[dev]'
 CI_OUT_DIR=./out IMAGE=... ARCH=amd64 MODE=dev MANIFEST_JSON='...' python -m ci
 ruff check . && ruff format --check . && mypy ci tests && pytest
-pytest -m integration          # the whole harness against baseimage-alpine:3.22; skips without Docker or syft
+pytest -m integration          # the whole harness against baseimage-alpine:3.22; skips without Docker, syft or dumper
 ```
 
 ## Design notes
 
 - **One run, one verdict.** No tag loops, no threads per architecture, no retries across platforms. The
   workflow calls the harness once per architecture on a native runner and merges the two reports.
-- **syft runs once**, as a pinned binary against the `docker:` source over the mounted socket, producing the
-  JSON (with file metadata) and the table in the same invocation. The package table, the SBOM, the file tree
-  and the package diff all derive from that one run.
-- **Hardlinks.** syft reports hardlinked files as regular files that share a digest, which is
-  indistinguishable from identical content (every s6 `type` file says `oneshot`). The harness therefore
-  streams `docker export` of a created container and reads the tar typeflags, which is exact and takes well
-  under a second for a typical image. Entries that are tar hardlinks become `type: hardlink` with
-  `link_target` set to the first path, so summing `size` over `type == file` gives the real footprint. If the
-  export cannot be read it falls back to the `(layer, sha256)` heuristic from the ideas doc.
+- **syft runs once, for packages only**, as a pinned binary against the `docker:` source over the mounted
+  socket, producing the JSON and the table in the same invocation. The package table, both SBOM files and the
+  package diff derive from that one run. File metadata is not requested: on desktop images it was over 90% of
+  the document, and vulnerability matching never reads it.
+- **The file tree comes from dumper**, not syft. The binary is copied into a created container of the image
+  (`/.lsio-dumper`, left out of the tree) and run as its entrypoint, so init never starts and nothing on the
+  host is mounted. It only calls `lstat`; hardlinks are exact from inode numbers. A 248k-entry desktop image
+  takes about two seconds.
 - **Layers.** `docker history` (via the SDK, raw byte sizes) is reconciled with `RootFS.Layers`: entries with
   a non-zero size first, then layer-producing instructions (`RUN`, `COPY`, `ADD`, `WORKDIR`). `from_base`
   compares against the FROM image when it is present locally: the labelled `io.linuxserver.image.base`

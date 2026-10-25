@@ -12,7 +12,7 @@ from unittest.mock import MagicMock
 import pytest
 from contracts import validate
 
-from ci import browser, harness, layers, packages
+from ci import browser, dumper, harness, layers, packages
 from ci.browser import ScreenshotResult
 from ci.config import load_settings
 from ci.packages import SyftError, SyftResult
@@ -80,7 +80,18 @@ def patched(
     monkeypatch.setattr(harness, "engine_version", lambda client: "29.9.2")
     monkeypatch.setattr(harness, "image_history", lambda client, ref: history_records)
     monkeypatch.setattr(harness, "copy_from_image", copy_from_image)
-    monkeypatch.setattr(harness, "export_hardlinks", lambda client, ref: {"/bin/coreutils": "/bin/busybox"})
+
+    def file_tree(client: Any, image: str, dest: Path) -> str:
+        tree = {
+            "n": "",
+            "c": [{"n": "bin", "c": [{"n": "busybox", "s": 900, "m": 0o755}, {"n": "sh", "l": "busybox"}]}],
+        }
+        with gzip.open(dest, "wt") as fh:
+            json.dump({"format": "lsio-files/1", "tree": tree}, fh)
+        return "1 dirs, 1 files (900 bytes), 1 symlinks"
+
+    monkeypatch.setattr(dumper, "file_tree", file_tree)
+    monkeypatch.setattr(packages, "write_spdx", lambda data, path: path.write_text('{"spdxVersion":"SPDX-2.3"}'))
     monkeypatch.setattr(
         harness, "run_container", lambda client, ref, env: calls.setdefault("env", env) and calls["container"]
     )
@@ -118,6 +129,7 @@ def test_full_run_writes_every_asset(tmp_path: Path, patched: dict[str, Any]) ->
         "layers.amd64.json",
         "package_versions.amd64.txt",
         "packages.amd64.json.gz",
+        "sbom.amd64.spdx.json",
         "test.amd64.json",
         "test.amd64.tar.gz",
     ]
@@ -141,8 +153,9 @@ def test_full_run_writes_every_asset(tmp_path: Path, patched: dict[str, Any]) ->
     layers = json.loads((out / "layers.amd64.json").read_text())
     assert [layer["from_base"] for layer in layers] == [True, True, False]
     with gzip.open(out / "files.amd64.json.gz") as fh:
-        files = json.load(fh)
-    assert {f["path"]: f["type"] for f in files}["/bin/coreutils"] == "hardlink"
+        assert json.load(fh)["format"] == "lsio-files/1"
+    file_tree = {t["name"]: t for t in report["tests"]}["File tree"]
+    assert file_tree["message"] == "1 dirs, 1 files (900 bytes), 1 symlinks"
     graph = json.loads((out / "init-graph.amd64.json").read_text())
     units = {u["name"]: u for u in graph["units"]}
     assert graph["d2"].startswith('"sonarr:latest": {') and '"baseimage-alpine:3.22"' in graph["d2"]
@@ -177,10 +190,10 @@ def test_startup_failure_and_syft_failure(
     assert statuses["Container startup"] == "FAIL"
     assert statuses["Runtime probe"] == "SKIP" and statuses["Take screenshot"] == "SKIP"
     assert statuses["Get package info"] == "FAIL" and statuses["Create SBOM"] == "FAIL"
-    assert statuses["File tree"] == "FAIL"
+    assert statuses["File tree"] == "PASS"
     assert statuses["Layers"] == "PASS"
     assert report["success"] is False
-    assert not (out / "packages.amd64.json.gz").exists()
+    assert not (out / "packages.amd64.json.gz").exists() and not (out / "sbom.amd64.spdx.json").exists()
     assert (out / "test.amd64.tar.gz").exists()
 
 

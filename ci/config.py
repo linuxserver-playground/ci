@@ -14,6 +14,13 @@ Arch = Literal["amd64", "arm64"]
 Mode = Literal["live", "dev", "pr"]
 
 
+DESKTOP_BASES = ("selkies", "kasmvnc", "rdesktop")
+DESKTOP_SCREENSHOT_DELAY: dict[str, int] = {"amd64": 30, "arm64": 90}
+"""Desktop images draw their session after the page has loaded, slower on arm64: the least they are given."""
+SCREENSHOT_MARGIN = 60
+"""The screenshot timeout always leaves this long for the endpoint to answer on top of the delay."""
+
+
 class ConfigError(ValueError):
     """The harness cannot run with the environment it was given."""
 
@@ -94,6 +101,21 @@ class Settings:
     @property
     def web(self) -> WebTest | None:
         return self.manifest.test.web if self.screenshot else None
+
+    @property
+    def screenshot_delay(self) -> int:
+        """Seconds between the page loading and the screenshot: the manifest's, raised for desktop bases."""
+        web = self.manifest.test.web
+        configured = web.screenshot_delay if web else 0
+        if self.manifest.build.base in DESKTOP_BASES:
+            return max(configured, DESKTOP_SCREENSHOT_DELAY[self.arch])
+        return configured
+
+    @property
+    def screenshot_timeout(self) -> int:
+        web = self.manifest.test.web
+        configured = web.screenshot_timeout if web else 0
+        return max(configured, self.screenshot_delay + SCREENSHOT_MARGIN)
 
 
 def split_ref(ref: str) -> tuple[str, str]:

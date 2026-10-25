@@ -84,3 +84,21 @@ def test_unknown_manifest_sections_are_ignored_but_unknown_test_keys_are_not() -
 )
 def test_split_ref(ref: str, expected: tuple[str, str]) -> None:
     assert split_ref(ref) == expected
+
+
+@pytest.mark.parametrize(
+    ("base", "arch", "configured", "delay", "timeout"),
+    [
+        ("alpine", "arm64", 10, 10, 120),
+        ("selkies", "amd64", 10, 30, 120),
+        ("selkies", "arm64", 30, 90, 150),
+        ("kasmvnc", "arm64", 120, 120, 180),
+    ],
+)
+def test_desktop_bases_wait_longer_before_the_screenshot(
+    base: str, arch: str, configured: int, delay: int, timeout: int
+) -> None:
+    manifest = {**MANIFEST, "build": {"base": base, "platforms": ["amd64", "arm64"]}}
+    manifest["test"] = {"web": {"port": 3001, "screenshot_delay": configured}}
+    settings = load_settings(env(ARCH=arch, MANIFEST_JSON=json.dumps(manifest)))
+    assert (settings.screenshot_delay, settings.screenshot_timeout) == (delay, timeout)
