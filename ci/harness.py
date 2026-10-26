@@ -50,6 +50,10 @@ TEST_ORDER = (
 )
 
 
+class Skip(Exception):
+    """Raised by a step that does not apply to this image; recorded as SKIP with the message."""
+
+
 class Run:
     """State for one harness run. Every step records a TestResult and never raises."""
 
@@ -91,6 +95,9 @@ class Run:
         start = time.monotonic()
         try:
             message = fn()
+        except Skip as skip:
+            self.record(name, "SKIP", str(skip), time.monotonic() - start)
+            return True
         except Exception as err:
             logger.exception("%s failed", name)
             self.record(name, "FAIL", f"{type(err).__name__}: {err}", time.monotonic() - start)
@@ -253,7 +260,7 @@ class Run:
             with tempfile.TemporaryDirectory(prefix="s6-") as tmp:
                 root = Path(tmp)
                 if not copy_from_image(self.client, self.settings.image, "/etc/s6-overlay/s6-rc.d", root / "image"):
-                    raise RuntimeError("image has no /etc/s6-overlay/s6-rc.d")
+                    raise Skip("not an s6 image: no /etc/s6-overlay/s6-rc.d")
                 units = initgraph.read_units(root / "image" / "s6-rc.d")
                 base_names: set[str] | None = None
                 if base_ref and copy_from_image(self.client, base_ref, "/etc/s6-overlay/s6-rc.d", root / "base"):

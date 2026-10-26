@@ -174,6 +174,18 @@ def test_disabled_tests_still_produce_static_assets(tmp_path: Path, patched: dic
     assert "env" not in patched
 
 
+def test_image_without_s6_skips_the_init_graph(
+    tmp_path: Path, patched: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(harness, "copy_from_image", lambda client, ref, src, dest: False)
+    out = tmp_path / "out"
+    report = run_harness(out, enabled=False)
+    graph = {t["name"]: t for t in report["tests"]}["Init graph"]
+    assert graph["status"] == "SKIP" and "not an s6 image" in graph["message"]
+    assert report["success"] is True
+    assert not (out / "init-graph.amd64.json").exists()
+
+
 def test_startup_failure_and_syft_failure(
     tmp_path: Path, patched: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
