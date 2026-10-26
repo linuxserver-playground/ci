@@ -64,6 +64,27 @@ class ReleaseSection(BaseModel):
     tag: str = "latest"
 
 
+class PortSpec(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    internal: str
+    optional: bool = False
+
+    @property
+    def number(self) -> int:
+        return int(self.internal.split("/", 1)[0])
+
+    @property
+    def protocol(self) -> Literal["tcp", "udp"]:
+        return "udp" if self.internal.endswith("/udp") else "tcp"
+
+
+class RuntimeSection(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    ports: list[PortSpec] = Field(default_factory=list)
+
+
 class Manifest(BaseModel):
     """The parts of image.yml the harness reads. Unknown sections are ignored, not rejected: the
     manifest is validated against image.schema.json by the builder before it reaches us."""
@@ -74,6 +95,12 @@ class Manifest(BaseModel):
     build: BuildSection = Field(default_factory=BuildSection)
     release: ReleaseSection = Field(default_factory=ReleaseSection)
     test: TestSection = Field(default_factory=TestSection)
+    runtime: RuntimeSection = Field(default_factory=RuntimeSection)
+
+    @property
+    def required_ports(self) -> list[PortSpec]:
+        """Ports the image declares as always listening: everything not marked optional."""
+        return [p for p in self.runtime.ports if not p.optional]
 
 
 @dataclass(frozen=True)

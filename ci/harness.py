@@ -16,12 +16,13 @@ from docker import DockerClient
 from docker.errors import DockerException
 from docker.models.containers import Container
 
-from . import browser, checks, dumper, initgraph, layers, packages, probe, startup
+from . import browser, checks, dumper, initgraph, layers, packages, probe, smoke, startup
 from .config import Settings
 from .docker_client import (
     connect,
     container_ip,
     container_logs,
+    container_running,
     copy_from_image,
     engine_version,
     image_history,
@@ -36,10 +37,15 @@ logger = logging.getLogger("ci")
 
 T = TypeVar("T")
 
+CONTAINER_TESTS = ("Services", "Ports", "Web response", "Take screenshot", "Runtime probe")
+"""The tests that need the container up after init: all SKIP when it is not."""
+
 TEST_ORDER = (
     "Container startup",
-    "Dotnet check",
-    "uwsgi check",
+    "Services",
+    "Ports",
+    "Web response",
+    "Runtime log check",
     "Get package info",
     "Create SBOM",
     "File tree",
@@ -75,6 +81,8 @@ class Run:
         )
         self.inspect: dict[str, Any] = {}
         self.container_log = ""
+        self.app_logs = ""
+        self.processes: list[checks.Process] = []
         self.syft: packages.SyftResult | None = None
         self.syft_error = ""
 
@@ -88,6 +96,23 @@ class Run:
             logger.warning("%s: %s %s", name, status, message)
         else:
             logger.error("%s: %s %s", name, status, message)
+
+    def skip_container_tests(self, reason: str) -> None:
+        for name in CONTAINER_TESTS:
+            self.record(name, "SKIP", reason)
+
+    def check(self, name: str, fn: Callable[[], checks.CheckResult], warning_key: str | None = None) -> None:
+        """Run a check that decides its own status; an exception is a FAIL like in `step`."""
+        start = time.monotonic()
+        try:
+            result = fn()
+        except Exception as err:
+            logger.exception("%s failed", name)
+            self.record(name, "FAIL", f"{type(err).__name__}: {err}", time.monotonic() - start)
+            return
+        self.record(name, result.status, result.message, time.monotonic() - start)
+        if warning_key and result.warning:
+            self.report.warnings[warning_key] = result.warning
 
     def step(self, name: str, fn: Callable[[], str]) -> bool:
         """Run `fn`, which returns a PASS message; any exception becomes a FAIL for `name`."""
@@ -119,8 +144,7 @@ class Run:
             self.run_container_tests()
         else:
             self.record("Container startup", "SKIP", "test.enabled is false in the manifest")
-            self.record("Runtime probe", "SKIP", "container was not started")
-            self.record("Take screenshot", "SKIP", "container was not started")
+            self.skip_container_tests("container was not started")
             self.run_syft()
 
         self.package_outputs()
@@ -134,8 +158,7 @@ class Run:
         except DockerException as err:
             logger.error("could not start the container: %s", err)
             self.record("Container startup", "FAIL", f"could not start the container: {err}")
-            self.record("Runtime probe", "SKIP", "container was not started")
-            self.record("Take screenshot", "SKIP", "container was not started")
+            self.skip_container_tests("container was not started")
             self.run_syft()
             return
         logger.info("started container %s", container.short_id)
@@ -150,14 +173,32 @@ class Run:
             if result.success:
                 self.observe(container)
             else:
-                self.record("Runtime probe", "SKIP", "container did not finish starting")
-                self.record("Take screenshot", "SKIP", "container did not finish starting")
+                self.skip_container_tests("container did not finish starting")
         finally:
+            if container_running(container):
+                self.processes = checks.list_processes(container)
+                self.app_logs = checks.read_app_logs(container)
+                if self.app_logs:
+                    (self.work / "app_logs.txt").write_text(self.app_logs, encoding="utf-8")
             self.container_log = container_logs(container, timestamps=True)
             (self.work / "container.log").write_text(self.container_log, encoding="utf-8")
             remove_container(container)
 
     def observe(self, container: Container) -> None:
+        before = smoke.service_status(container)
+        start = time.monotonic()
+        ip = container_ip(container)
+
+        self.check("Ports", lambda: smoke.ports_check(container, self.manifest.required_ports), "ports")
+        web = self.manifest.test.web
+        url = f"{web.scheme}://{ip}:{web.port}{web.path}" if web else ""
+        if web is None:
+            self.record("Web response", "SKIP", "manifest has no test.web")
+        elif not ip:
+            self.record("Web response", "FAIL", "container has no IP address")
+        else:
+            self.check("Web response", lambda: smoke.web_check(url, web.auth, web.screenshot_timeout))
+
         def do_probe() -> str:
             self.report.runtime = probe.probe(container)
             observed = self.report.runtime
@@ -166,23 +207,32 @@ class Run:
 
         self.step("Runtime probe", do_probe)
         (self.work / "sysinfo.txt").write_text(checks.collect_sysinfo(container), encoding="utf-8")
+        web_result = self.results.get("Web response")
+        if web_result is not None and web_result.status == "FAIL":
+            self.record("Take screenshot", "SKIP", "the web endpoint did not answer (see Web response)")
+        else:
+            self.screenshot(url if ip else "")
 
-        web = self.settings.web
-        if web is None:
+        remaining = smoke.SERVICE_WINDOW - (time.monotonic() - start)
+        if remaining > 0:
+            time.sleep(remaining)
+        after = smoke.service_status(container)
+        self.check("Services", lambda: smoke.services_check(before, after, time.monotonic() - start))
+
+    def screenshot(self, url: str) -> None:
+        if self.settings.web is None:
             reason = "SCREENSHOT=false" if self.manifest.test.web else "manifest has no test.web"
             self.record("Take screenshot", "SKIP", reason)
             return
+        if not url:
+            self.record("Take screenshot", "FAIL", "container has no IP address")
+            return
         start = time.monotonic()
         try:
-            ip = container_ip(container)
-            if not ip:
-                self.record("Take screenshot", "FAIL", "container has no IP address")
-                return
-            url = f"{web.scheme}://{ip}:{web.port}{web.path}"
             shot = browser.take_screenshot(
                 url,
                 self.work / "screenshot.png",
-                web.auth,
+                self.settings.web.auth,
                 self.settings.screenshot_delay,
                 self.settings.screenshot_timeout,
             )
@@ -215,13 +265,12 @@ class Run:
         diff = packages.package_diff(self.settings.previous_packages_url, table) if table else ""
         (self.work / "package_diff.txt").write_text(diff, encoding="utf-8")
 
-        dotnet = checks.dotnet_check(table, self.container_log)
-        self.record("Dotnet check", dotnet.status, dotnet.message)
-        uwsgi = checks.uwsgi_check(table, self.container_log)
-        self.record("uwsgi check", uwsgi.status, uwsgi.message)
-        for key, check in (("dotnet", dotnet), ("uwsgi", uwsgi)):
-            if check.warning:
-                self.report.warnings[key] = check.warning
+        if not self.container_log:
+            self.record("Runtime log check", "SKIP", "the container wrote no log")
+            return
+        result, warnings = checks.runtime_check(self.processes, table, (self.container_log, self.app_logs))
+        self.record("Runtime log check", result.status, result.message)
+        self.report.warnings.update(warnings)
 
     def _write_sbom(self, data: dict[str, Any]) -> str:
         path = self.asset("packages.<arch>.json.gz")

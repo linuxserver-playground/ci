@@ -29,7 +29,7 @@ docker run --rm \
 | `IMAGE` | yes | Reference of the image under test. It must already be in the daemon; nothing is pulled. |
 | `ARCH` | yes | `amd64` or `arm64`. Only names the output files; the runner must be native. |
 | `MODE` | yes | `live`, `dev` or `pr`. Recorded in the report; `live` uses `release.tag` in the init diagram header. |
-| `MANIFEST_JSON` | yes | The repo's `image.yml` as JSON. `name`, `build.base`, `release.tag` and the whole `test` section are read. |
+| `MANIFEST_JSON` | yes | The repo's `image.yml` as JSON. `name`, `build.base`, `release.tag`, `runtime.ports` and the whole `test` section are read. |
 | `PREVIOUS_PACKAGES_URL` | no | The previous release's `package_versions.<arch>.txt`; drives `package_diff.txt`. |
 | `CI_LOG_LEVEL` | no | `DEBUG`, `INFO` (default), `WARNING`... |
 | `SYFT_TIMEOUT` | no | Seconds for the syft run. Default `test.sbom_timeout` or 900. |
@@ -55,7 +55,7 @@ Everything goes to `/out`. Names are fixed; `<arch>` is `ARCH`.
 | File | Contract | Content |
 | --- | --- | --- |
 | `test.<arch>.json` | `test-report.schema.json` | Tests, `success`, `startup_seconds`, `warnings`, `runtime` block, `files` (paths inside the tarball). |
-| `test.<arch>.tar.gz` | | `container.log`, `sysinfo.txt`, `package_diff.txt`, `screenshot.png` and `browser.log` when a web test ran. |
+| `test.<arch>.tar.gz` | | `container.log`, `sysinfo.txt`, `package_diff.txt`, `app_logs.txt` when the image has nginx or php-fpm error logs, `screenshot.png` and `browser.log` when a web test ran. |
 | `packages.<arch>.json.gz` | syft JSON | Packages only: `syft docker:<IMAGE> --select-catalogers +sbom-cataloger -o syft-json` with `SYFT_FILE_METADATA_SELECTION=none`, then trimmed of every file record, per-package file list and file relationship. |
 | `sbom.<arch>.spdx.json` | SPDX 2.3 | The same packages-only document converted with `syft convert`. Not a Release asset: the publish job attaches it to the image as its SBOM attestation. |
 | `files.<arch>.json.gz` | `bundle.schema.json` `$defs/file_tree` | `dumper files` run inside the image (format `lsio-files/1`): a nested tree with names, types, sizes, link targets, permissions and owners. |
@@ -64,9 +64,20 @@ Everything goes to `/out`. Names are fixed; `<arch>` is `ARCH`.
 | `image-config.<arch>.json` | | `docker image inspect` as a single object. |
 | `init-graph.<arch>.json` | `bundle.schema.json` `init_graph` | `{d2, units}`: the s6-rc units with type, `depends_on`, `source` (`base`, `image`, `mod`) and the `run` script for this image's own units; `d2` in the style of the old `init_diagram` readme block. |
 
-The tests in `test.<arch>.json`, in order: Container startup, Dotnet check, uwsgi check, Get package info,
-Create SBOM, File tree, Layers, Init graph, Take screenshot, Runtime probe. Statuses are `PASS`, `FAIL`,
-`WARN` and `SKIP`; `success` is true when nothing failed and at least one test passed.
+The tests in `test.<arch>.json`, in order: Container startup, Services, Ports, Web response, Runtime log check,
+Get package info, Create SBOM, File tree, Layers, Init graph, Take screenshot, Runtime probe. Statuses are
+`PASS`, `FAIL`, `WARN` and `SKIP`; `success` is true when nothing failed and at least one test passed. Reports
+made before the smoke tests have a Dotnet check and a uwsgi check in place of the Services to Runtime log check
+rows.
+
+The smoke tests after init, for every image type:
+
+| Test | Fails or warns when | Notes |
+| --- | --- | --- |
+| Services | FAIL: an s6 service that s6 wants up is down, or restarted, between two snapshots at least 15 s apart | The first snapshot is taken when init is done, the second after the screenshot. A unit held down on purpose (`s6-svc -d`) is not wanted up. |
+| Ports | WARN: a port in `runtime.ports` that is not `optional` is not listening (TCP) or bound (UDP) within 60 s | Some ports only open once the app is configured, which a test run never does. Also gives the app time to come up before the web tests. |
+| Web response | FAIL: `test.web` keeps answering 5xx, or not at all, for `screenshot_timeout` seconds | Any answer below 500 passes (a login wall or a 404 at `/` is an app that is up). A 502 from nginx in front of a dead app renders in a screenshot; this catches it. Runs with `SCREENSHOT=false` too; when it fails, Take screenshot is skipped rather than waiting out its own timeout. |
+| Runtime log check | WARN: a known failure line of a runtime the image has, in the container log or `app_logs.txt` | See below. Each runtime with a hit gets an entry in `warnings`. |
 
 The `runtime` block is observed while the container sits idle after init: summed `VmRSS` of every process,
 process count, listening TCP ports (`/proc/net/tcp{,6}` state `0A`), bound UDP ports (`/proc/net/udp{,6}`
@@ -126,9 +137,16 @@ pytest -m integration          # the whole harness against baseimage-alpine:3.22
   The d2 text reproduces the shape of the `init_diagram` blocks the Jenkins pipeline wrote: preamble,
   `dep -> unit` edges in unit order, `base -> unit` for units without dependencies, `unit -> legacy-services`
   for every longrun, then the Base Images block.
-- **Dotnet and uwsgi checks** no longer warn merely because the image contains ICU or uWSGI (those warnings
-  were about ARM32 under QEMU, which the playground does not build). They detect the runtime from the package
-  table and look for its known failure lines in the container log; a hit is a `WARN` and lands in `warnings`.
+- **Runtime log check.** The runtimes are recognised from the processes running at the end of the test
+  (`/proc/<pid>/comm` and argv[0]; `exe` and `maps` are out of reach, as `docker exec` has no `CAP_SYS_PTRACE`
+  and the app runs as `abc`): .NET (a self-contained app has `libcoreclr.so` beside its binary), Java, Node.js,
+  Python, PHP, nginx and uWSGI. The message names them. Each runtime's failure lines are looked for when one of
+  its processes ran or the package table holds its packages (an app that crashed before anyone looked leaves no
+  process, and its traceback is the useful part), so a generic line such as uWSGI's `unable to load` only counts
+  where uWSGI is. Packages never name a running runtime: ICU comes with PHP's intl too (heimdall was reported as
+  .NET), and qbittorrent ships a .NET CLI beside a C++ app. The nginx bases log nginx and php-fpm errors to
+  `/config/log/nginx/error.log` and `/config/log/php/error.log`, never to the container log, so their last
+  500 lines are read too and kept as `app_logs.txt`.
 - **Image.** `ghcr.io/linuxserver/baseimage-ubuntu:noble` (and `arm64v8-noble`), in the usual single `RUN`
   chain. Noble ships Python 3.12, so `python3.13` and `python3.13-venv` come from the deadsnakes PPA and the
   harness lives in the `/lsiopy` venv the base already puts on `PATH`. syft is a pinned binary from its GitHub
