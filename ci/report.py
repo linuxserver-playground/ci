@@ -20,7 +20,7 @@ TARBALL_FILES = {
     "browser_log": "browser.log",
     "sysinfo": "sysinfo.txt",
 }
-EXTRA_TARBALL_FILES = ("package_diff.txt",)
+EXTRA_TARBALL_FILES = ("package_diff.txt", "app_logs.txt")
 
 
 @dataclass

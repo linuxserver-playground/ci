@@ -18,7 +18,7 @@ the website's build page and the run's job summary show `test.<arch>.json` with 
 | `ci/harness.py` | The run: container tests, syft outputs, static assets, report. One `TestResult` per step. |
 | `ci/config.py` | `Settings` from env plus the pydantic model of the manifest parts we read. |
 | `ci/docker_client.py` | Thin wrapper over the docker SDK: inspect, history, run, exec, copy. |
-| `ci/startup.py`, `ci/checks.py`, `ci/probe.py`, `ci/browser.py` | Container-side tests: init wait, dotnet/uwsgi/sysinfo, runtime probe, Selenium screenshot. |
+| `ci/startup.py`, `ci/smoke.py`, `ci/checks.py`, `ci/probe.py`, `ci/browser.py` | Container-side tests: init wait, services/ports/web response, runtime log check and sysinfo, runtime probe, Selenium screenshot. |
 | `ci/packages.py`, `ci/dumper.py`, `ci/layers.py`, `ci/initgraph.py` | Bundle asset emitters (`dumper.py` runs the dumper binary for the file tree). |
 | `ci/report.py` | `test.<arch>.json` and the tarball of logs and the screenshot. |
 | `tests/` | pytest. Unit tests mock the SDK; `test_integration.py` runs the whole harness (marker `integration`). |

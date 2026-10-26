@@ -10,10 +10,12 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+import requests
 from contracts import validate
 
-from ci import browser, dumper, harness, layers, packages
+from ci import browser, dumper, harness, layers, packages, smoke
 from ci.browser import ScreenshotResult
+from ci.checks import CheckResult
 from ci.config import load_settings
 from ci.packages import SyftError, SyftResult
 from tests.conftest import write_unit
@@ -47,7 +49,11 @@ def fake_container(log: str = LOG_DONE) -> MagicMock:
     container.short_id = "abc123"
     container.status = "running"
     container.logs.return_value = log.encode()
-    container.exec_run.return_value = MagicMock(exit_code=0, output=b"VmRSS: 100 kB\n")
+    container.exec_run.side_effect = lambda command, demux=False: (
+        MagicMock(exit_code=1, output=b"")
+        if command[0] == "tail"
+        else MagicMock(exit_code=0, output=b"VmRSS: 100 kB\n")
+    )
     container.diff.return_value = []
     container.attrs = {"NetworkSettings": {"Networks": {"bridge": {"IPAddress": "172.17.0.9"}}}}
     return container
@@ -99,6 +105,8 @@ def patched(
     monkeypatch.setattr(packages, "run_syft", lambda image, timeout: calls["syft"])
     monkeypatch.setattr(packages, "fetch_previous_table", lambda url: "NAME VERSION\nbash 5.1\n")
     monkeypatch.setattr(layers, "registry_manifest_layers", lambda image, arch: None)
+    monkeypatch.setattr(smoke, "SERVICE_WINDOW", 0)
+    monkeypatch.setattr(requests, "get", lambda url, **kwargs: MagicMock(status_code=200))
     monkeypatch.setattr(
         layers,
         "find_base_image",
@@ -136,7 +144,9 @@ def test_full_run_writes_every_asset(tmp_path: Path, patched: dict[str, Any]) ->
     assert report["success"] is True
     assert [t["name"] for t in report["tests"]] == list(harness.TEST_ORDER)
     statuses = {t["name"]: t["status"] for t in report["tests"]}
-    assert statuses["Take screenshot"] == "SKIP" and statuses["Dotnet check"] == "PASS"
+    assert statuses["Take screenshot"] == "SKIP" and statuses["Web response"] == "SKIP"
+    assert statuses["Services"] == "SKIP" and statuses["Ports"] == "SKIP"
+    assert statuses["Runtime log check"] == "PASS"
     assert report["image"] == "sonarr" and report["tag"] == "latest" and report["engine"] == "29.9.2"
     assert report["runtime"]["rss_bytes"] == 102400
     assert patched["env"] == {"S6_VERBOSITY": "2", "FOO": "bar"} and patched["removed"]
@@ -199,6 +209,7 @@ def test_startup_failure_and_syft_failure(
     statuses = {t["name"]: t["status"] for t in report["tests"]}
     assert statuses["Container startup"] == "FAIL"
     assert statuses["Runtime probe"] == "SKIP" and statuses["Take screenshot"] == "SKIP"
+    assert statuses["Services"] == "SKIP" and statuses["Ports"] == "SKIP" and statuses["Web response"] == "SKIP"
     assert statuses["Get package info"] == "FAIL" and statuses["Create SBOM"] == "FAIL"
     assert statuses["File tree"] == "PASS"
     assert statuses["Layers"] == "PASS"
@@ -220,7 +231,7 @@ def test_screenshot_path(tmp_path: Path, patched: dict[str, Any], monkeypatch: p
     report = run_harness(out, enabled=True, web=True)
     assert captured["url"] == "http://172.17.0.9:8989/"
     statuses = {t["name"]: t["status"] for t in report["tests"]}
-    assert statuses["Take screenshot"] == "PASS"
+    assert statuses["Take screenshot"] == "PASS" and statuses["Web response"] == "PASS"
     assert report["files"]["screenshot"] == "screenshot.png" and report["files"]["browser_log"] == "browser.log"
 
 
@@ -237,3 +248,49 @@ def test_container_start_failure_is_recorded(
     statuses = {t["name"]: t["status"] for t in report["tests"]}
     assert statuses["Container startup"] == "FAIL" and statuses["Create SBOM"] == "PASS"
     assert report["success"] is False
+
+
+def test_crashed_service_and_app_log_errors(
+    tmp_path: Path, patched: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """svc-php-fpm restarts between the two snapshots and nginx logs why: the report fails on the service and
+    carries the nginx error log."""
+    snapshots = iter(
+        [
+            "svc-nginx true true 287 5\nsvc-php-fpm true true 284 5\n",
+            "svc-nginx true true 287 20\nsvc-php-fpm true true 412 1\n",
+        ]
+    )
+
+    def exec_run(command: list[str], demux: bool = False) -> MagicMock:
+        script = " ".join(command)
+        if "s6-svstat" in script:
+            return MagicMock(exit_code=0, output=next(snapshots).encode())
+        if "/proc/[0-9]*; do a0" in script:
+            return MagicMock(exit_code=0, output=b"nginx\t0\tnginx: master process\n")
+        if command[:1] == ["tail"] and command[-1].endswith("nginx/error.log"):
+            return MagicMock(exit_code=0, output=b"[crit] connect() to unix:/var/run/php-fpm.sock failed\n")
+        if command[:1] == ["tail"]:
+            return MagicMock(exit_code=1, output=b"")
+        return MagicMock(exit_code=0, output=b"VmRSS: 100 kB\n")
+
+    patched["container"].exec_run.side_effect = exec_run
+    out = tmp_path / "out"
+    report = run_harness(out, enabled=True)
+    tests = {t["name"]: t for t in report["tests"]}
+    assert tests["Services"]["status"] == "FAIL" and tests["Services"]["message"].startswith("svc-php-fpm restarted")
+    assert tests["Runtime log check"]["status"] == "WARN"
+    assert report["warnings"]["nginx"].startswith("nginx error in the logs: [crit] connect()")
+    assert report["success"] is False
+    with tarfile.open(out / "test.amd64.tar.gz") as tar:
+        assert "app_logs.txt" in tar.getnames()
+
+
+def test_failed_web_response_skips_the_screenshot(
+    tmp_path: Path, patched: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(smoke, "web_check", lambda url, auth, timeout: CheckResult("FAIL", f"{url} answered HTTP 502"))
+    monkeypatch.setattr(browser, "take_screenshot", MagicMock(side_effect=AssertionError("no screenshot")))
+    report = run_harness(tmp_path / "out", enabled=True, web=True)
+    tests = {t["name"]: t for t in report["tests"]}
+    assert tests["Web response"]["status"] == "FAIL" and tests["Take screenshot"]["status"] == "SKIP"

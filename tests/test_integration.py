@@ -72,6 +72,7 @@ def test_whole_harness_against_the_base_image(tmp_path: Path) -> None:
     assert statuses["Container startup"] == "PASS"
     assert statuses["Take screenshot"] == "SKIP"
     assert statuses["Runtime probe"] == "PASS"
+    assert statuses["Services"] == "PASS" and statuses["Runtime log check"] == "PASS"
     assert report["runtime"]["s6_services"] == ["svc-cron"]
     assert report["startup_seconds"] > 0
 
