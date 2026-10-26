@@ -143,12 +143,10 @@ def test_full_run_writes_every_asset(tmp_path: Path, patched: dict[str, Any]) ->
 
     with tarfile.open(out / "test.amd64.tar.gz") as tar:
         names = set(tar.getnames())
-        html = tar.extractfile("index.html")
-        assert html is not None and b"sonarr:latest" in html.read()
         diff = tar.extractfile("package_diff.txt")
         assert diff is not None and b"[*] bash: 5.1 -> 5.2" in diff.read()
-    assert names == {"index.html", "container.log", "sysinfo.txt", "package_diff.txt"}
-    assert report["files"] == {"html": "index.html", "container_log": "container.log", "sysinfo": "sysinfo.txt"}
+    assert names == {"container.log", "sysinfo.txt", "package_diff.txt"}
+    assert report["files"] == {"container_log": "container.log", "sysinfo": "sysinfo.txt"}
 
     layers = json.loads((out / "layers.amd64.json").read_text())
     assert [layer["from_base"] for layer in layers] == [True, True, False]

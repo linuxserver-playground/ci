@@ -7,7 +7,8 @@ Actions workflow (`workflows` repo) runs the published image once per architectu
 image and bundles what it writes into the GitHub Release. The hub reads `test.<arch>.json`,
 `files.<arch>.json.gz`, `layers.<arch>.json`, `packages.<arch>.json.gz` and `init-graph.<arch>.json`; the
 publish job attaches `sbom.<arch>.spdx.json` to the image;
-humans open `index.html` from `test.<arch>.tar.gz`. Changing an output name or shape breaks both consumers.
+the website's build page and the run's job summary show `test.<arch>.json` with the screenshot and logs from
+`test.<arch>.tar.gz`. Changing an output name or shape breaks both consumers.
 
 ## Layout
 
@@ -19,7 +20,7 @@ humans open `index.html` from `test.<arch>.tar.gz`. Changing an output name or s
 | `ci/docker_client.py` | Thin wrapper over the docker SDK: inspect, history, run, exec, copy. |
 | `ci/startup.py`, `ci/checks.py`, `ci/probe.py`, `ci/browser.py` | Container-side tests: init wait, dotnet/uwsgi/sysinfo, runtime probe, Selenium screenshot. |
 | `ci/packages.py`, `ci/dumper.py`, `ci/layers.py`, `ci/initgraph.py` | Bundle asset emitters (`dumper.py` runs the dumper binary for the file tree). |
-| `ci/report.py`, `ci/template.html` | `test.<arch>.json`, HTML report, tarball. |
+| `ci/report.py` | `test.<arch>.json` and the tarball of logs and the screenshot. |
 | `tests/` | pytest. Unit tests mock the SDK; `test_integration.py` runs the whole harness (marker `integration`). |
 | `Dockerfile`, `Dockerfile.aarch64` | The published image: Ubuntu noble base, Chrome/Chromium, docker CLI, pinned syft. |
 

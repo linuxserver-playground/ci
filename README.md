@@ -55,7 +55,7 @@ Everything goes to `/out`. Names are fixed; `<arch>` is `ARCH`.
 | File | Contract | Content |
 | --- | --- | --- |
 | `test.<arch>.json` | `test-report.schema.json` | Tests, `success`, `startup_seconds`, `warnings`, `runtime` block, `files` (paths inside the tarball). |
-| `test.<arch>.tar.gz` | | `index.html` (the report), `container.log`, `sysinfo.txt`, `package_diff.txt`, `screenshot.png` and `browser.log` when a web test ran. |
+| `test.<arch>.tar.gz` | | `container.log`, `sysinfo.txt`, `package_diff.txt`, `screenshot.png` and `browser.log` when a web test ran. |
 | `packages.<arch>.json.gz` | syft JSON | Packages only: `syft docker:<IMAGE> --select-catalogers +sbom-cataloger -o syft-json` with `SYFT_FILE_METADATA_SELECTION=none`, then trimmed of every file record, per-package file list and file relationship. |
 | `sbom.<arch>.spdx.json` | SPDX 2.3 | The same packages-only document converted with `syft convert`. Not a Release asset: the publish job attaches it to the image as its SBOM attestation. |
 | `files.<arch>.json.gz` | `bundle.schema.json` `$defs/file_tree` | `dumper files` run inside the image (format `lsio-files/1`): a nested tree with names, types, sizes, link targets, permissions and owners. |
@@ -85,7 +85,7 @@ docker run --rm \
   -e ARCH=amd64 -e MODE=dev \
   -e MANIFEST_JSON='{"schema":1,"name":"baseimage-alpine","build":{"base":"alpine","platforms":["amd64"]},"test":{"enabled":true}}' \
   ci:dev
-tar xzf out/test.amd64.tar.gz -C out && xdg-open out/index.html
+jq . out/test.amd64.json && tar xzf out/test.amd64.tar.gz -C out
 ```
 
 Running the Python directly (needs `syft` and `dumper` on `PATH`, and Chrome plus `chromedriver` for web tests):

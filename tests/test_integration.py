@@ -77,8 +77,8 @@ def test_whole_harness_against_the_base_image(tmp_path: Path) -> None:
 
     with tarfile.open(out / "test.amd64.tar.gz") as tar:
         names = set(tar.getnames())
-    assert {"index.html", "container.log", "sysinfo.txt", "package_diff.txt"} <= names
-    assert report["files"] == {"html": "index.html", "container_log": "container.log", "sysinfo": "sysinfo.txt"}
+    assert {"container.log", "sysinfo.txt", "package_diff.txt"} <= names
+    assert report["files"] == {"container_log": "container.log", "sysinfo": "sysinfo.txt"}
 
     layers = json.loads((out / "layers.amd64.json").read_text())
     inspect = json.loads((out / "image-config.amd64.json").read_text())

@@ -16,7 +16,7 @@ from docker import DockerClient
 from docker.errors import DockerException
 from docker.models.containers import Container
 
-from . import __version__, browser, checks, dumper, initgraph, layers, packages, probe, startup
+from . import browser, checks, dumper, initgraph, layers, packages, probe, startup
 from .config import Settings
 from .docker_client import (
     connect,
@@ -30,7 +30,7 @@ from .docker_client import (
     run_container,
 )
 from .logger import success
-from .report import Report, TestResult, now, render_html, validate_report, write_json, write_tarball
+from .report import Report, TestResult, now, validate_report, write_json, write_tarball
 
 logger = logging.getLogger("ci")
 
@@ -77,7 +77,6 @@ class Run:
         self.container_log = ""
         self.syft: packages.SyftResult | None = None
         self.syft_error = ""
-        self.package_diff = ""
 
     # -- helpers --------------------------------------------------------------------------------------------
 
@@ -215,7 +214,6 @@ class Run:
 
         diff = packages.package_diff(self.settings.previous_packages_url, table) if table else ""
         (self.work / "package_diff.txt").write_text(diff, encoding="utf-8")
-        self.package_diff = diff
 
         dotnet = checks.dotnet_check(table, self.container_log)
         self.record("Dotnet check", dotnet.status, dotnet.message)
@@ -285,8 +283,6 @@ class Run:
                 self.report.add(result)
         self.report.finished = now()
 
-        html = render_html(self.html_context())
-        (self.work / "index.html").write_text(html, encoding="utf-8")
         self.report.files = write_tarball(self.work, self.asset("test.<arch>.tar.gz"))
 
         record = self.report.as_dict()
@@ -298,44 +294,6 @@ class Run:
             success(logger, "all tests passed for %s", self.settings.image)
         else:
             logger.error("tests FAILED for %s", self.settings.image)
-
-    def html_context(self) -> dict[str, Any]:
-        config = self.inspect.get("Config", {})
-        labels: dict[str, str] = dict(config.get("Labels") or {})
-        build_info = {
-            "version": labels.get("org.opencontainers.image.version", "-"),
-            "created": labels.get("org.opencontainers.image.created", self.inspect.get("Created", "-")),
-            "size": f"{int(self.inspect.get('Size', 0)) / 1_000_000:.2f}MB",
-            "base": labels.get("io.linuxserver.image.base", self.manifest.build.base),
-            "mode": self.settings.mode,
-            "arch": self.arch,
-            "engine": self.report.engine or "-",
-        }
-        finished = self.report.finished or now()
-        return {
-            "image": self.settings.image,
-            "name": self.manifest.name,
-            "tag": self.report.tag,
-            "arch": self.arch,
-            "success": self.report.success,
-            "tests": [t.as_dict() for t in self.report.tests],
-            "warnings": self.report.warnings,
-            "runtime": self.report.runtime,
-            "build_info": build_info,
-            "container_log": self.container_log,
-            "package_table": self.syft.table if self.syft else self.syft_error,
-            "package_diff": self.package_diff,
-            "browser_log": self._read_work("browser.log"),
-            "sysinfo": self._read_work("sysinfo.txt"),
-            "screenshot": (self.work / "screenshot.png").is_file(),
-            "startup_seconds": self.report.startup_seconds,
-            "total_runtime": f"{(finished - self.report.started).total_seconds():.1f}s",
-            "ci_version": __version__,
-        }
-
-    def _read_work(self, name: str) -> str:
-        path = self.work / name
-        return path.read_text(encoding="utf-8") if path.is_file() else ""
 
 
 def run(settings: Settings) -> int:

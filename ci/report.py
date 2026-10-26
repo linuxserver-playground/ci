@@ -1,4 +1,4 @@
-"""test.<arch>.json (test-report.schema.json), the HTML report and the tarball that carries it."""
+"""test.<arch>.json (test-report.schema.json) and the tarball of logs and the screenshot that goes with it."""
 
 from __future__ import annotations
 
@@ -10,15 +10,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from jinja2 import Environment, FileSystemLoader, select_autoescape
-
 from . import __version__
 
 logger = logging.getLogger("report")
 
-TEMPLATE_DIR = Path(__file__).resolve().parent
 TARBALL_FILES = {
-    "html": "index.html",
     "container_log": "container.log",
     "screenshot": "screenshot.png",
     "browser_log": "browser.log",
@@ -112,14 +108,6 @@ def validate_report(record: dict[str, Any]) -> list[str]:
         logger.debug("contracts package not installed; skipping schema validation")
         return []
     return [format_error(e) for e in errors("test-report", record)]
-
-
-def render_html(context: dict[str, Any]) -> str:
-    env = Environment(
-        autoescape=select_autoescape(enabled_extensions=("html", "xml"), default_for_string=True),
-        loader=FileSystemLoader(str(TEMPLATE_DIR)),
-    )
-    return env.get_template("template.html").render(**context)
 
 
 def write_tarball(work_dir: Path, tar_path: Path) -> dict[str, str]:
