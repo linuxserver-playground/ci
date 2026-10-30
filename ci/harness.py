@@ -314,6 +314,9 @@ class Run:
                 if self.settings.image_root is not None:
                     own_root = self.settings.image_root / "etc" / "s6-overlay" / "s6-rc.d"
                     own_names = {u.name for u in initgraph.read_units(own_root)}
+                    if labels.get("io.linuxserver.image.base", "").strip() in ("", "scratch"):
+                        # A root base image: s6-overlay's own bundles (user, user2) are its too, not a base's.
+                        own_names = {u.name for u in units}
                 base_names: set[str] | None = None
                 if (
                     own_names is None

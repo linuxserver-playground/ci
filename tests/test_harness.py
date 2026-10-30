@@ -216,6 +216,21 @@ def test_repository_root_settles_the_init_graph_attribution(
     assert units["init-adduser"]["source"] == "base" and units["init-mod-sonarr-extra"]["source"] == "mod"
 
 
+def test_a_root_base_image_owns_every_unit(
+    tmp_path: Path, patched: dict[str, Any], inspect_record: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Built FROM scratch, nothing in the image came from a base: s6-overlay's bundles count as its own too."""
+    inspect_record["Config"]["Labels"]["io.linuxserver.image.base"] = "scratch"
+    monkeypatch.setattr(layers, "find_base_image", lambda client, inspect, labels, base, arch: None)
+    image_root = tmp_path / "root"
+    write_unit(image_root / "etc" / "s6-overlay" / "s6-rc.d", "init-adduser", "oneshot")
+    out = tmp_path / "out"
+    run_harness(out, enabled=False, image_root=image_root)
+    units = json.loads((out / "init-graph.amd64.json").read_text())["units"]
+    assert {u["source"] for u in units} == {"image", "mod"}
+    assert next(u for u in units if u["name"] == "user")["source"] == "image"
+
+
 def test_image_without_s6_skips_the_init_graph(
     tmp_path: Path, patched: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
