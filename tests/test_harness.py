@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import gzip
 import json
+import shutil
 import tarfile
 from pathlib import Path
 from typing import Any
@@ -24,7 +25,7 @@ TABLE = "NAME     VERSION   TYPE\nbash     5.2       apk\nicu-libs 74.2      apk
 LOG_DONE = "[migrations] started\n[ls.io-init] done.\n"
 
 
-def settings_for(out: Path, enabled: bool, web: bool = False) -> Any:
+def settings_for(out: Path, enabled: bool, web: bool = False, image_root: Path | None = None) -> Any:
     manifest: dict[str, Any] = {
         "schema": 1,
         "name": "sonarr",
@@ -41,6 +42,8 @@ def settings_for(out: Path, enabled: bool, web: bool = False) -> Any:
         "MANIFEST_JSON": json.dumps(manifest),
         "PREVIOUS_PACKAGES_URL": "https://example.invalid/package_versions.amd64.txt",
     }
+    if image_root is not None:
+        env["IMAGE_ROOT"] = str(image_root)
     return load_settings(env, out_dir=out)
 
 
@@ -118,10 +121,10 @@ def patched(
     return calls
 
 
-def run_harness(out: Path, enabled: bool, web: bool = False) -> dict[str, Any]:
+def run_harness(out: Path, enabled: bool, web: bool = False, image_root: Path | None = None) -> dict[str, Any]:
     work = out.parent / "work"
     work.mkdir()
-    harness.Run(settings_for(out, enabled, web), MagicMock(), work).execute()
+    harness.Run(settings_for(out, enabled, web, image_root), MagicMock(), work).execute()
     report: dict[str, Any] = json.loads((out / "test.amd64.json").read_text())
     validate("test-report", report)
     return report
@@ -180,6 +183,37 @@ def test_disabled_tests_still_produce_static_assets(tmp_path: Path, patched: dic
     assert report["success"] is True
     assert "startup_seconds" not in report and "runtime" not in report
     assert "env" not in patched
+
+
+def test_repository_root_settles_the_init_graph_attribution(
+    tmp_path: Path, patched: dict[str, Any], monkeypatch: pytest.MonkeyPatch, s6_tree: Path
+) -> None:
+    """With the repository's root/ mounted, its units are the image's own and the base image is never copied."""
+    image_root = tmp_path / "root"
+    write_unit(
+        image_root / "etc" / "s6-overlay" / "s6-rc.d",
+        "svc-sonarr",
+        "longrun",
+        ["init-services"],
+        run="#!/bin/sh\nexec sonarr\n",
+    )
+    copied: list[str] = []
+
+    def copy_from_image(client: Any, ref: str, src: str, dest: Path) -> bool:
+        copied.append(ref)
+        shutil.copytree(s6_tree, dest / "s6-rc.d")
+        return True
+
+    monkeypatch.setattr(harness, "copy_from_image", copy_from_image)
+    out = tmp_path / "out"
+    report = run_harness(out, enabled=False, image_root=image_root)
+    graph = {t["name"]: t for t in report["tests"]}["Init graph"]
+    assert graph["status"] == "PASS" and "1 from this image, own units from the repository" in graph["message"]
+    assert copied == ["ghcr.io/linuxserver-playground/sonarr:latest"]
+    units = {u["name"]: u for u in json.loads((out / "init-graph.amd64.json").read_text())["units"]}
+    assert units["svc-sonarr"]["source"] == "image" and "exec sonarr" in units["svc-sonarr"]["script"]
+    assert units["init-sonarr-config"]["source"] == "base" and "script" not in units["init-sonarr-config"]
+    assert units["init-adduser"]["source"] == "base" and units["init-mod-sonarr-extra"]["source"] == "mod"
 
 
 def test_image_without_s6_skips_the_init_graph(

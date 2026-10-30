@@ -309,17 +309,31 @@ class Run:
                 if not copy_from_image(self.client, self.settings.image, "/etc/s6-overlay/s6-rc.d", root / "image"):
                     raise Skip("not an s6 image: no /etc/s6-overlay/s6-rc.d")
                 units = initgraph.read_units(root / "image" / "s6-rc.d")
+                # The repository's own units settle the attribution; the base comparison is for runs without it.
+                own_names: set[str] | None = None
+                if self.settings.image_root is not None:
+                    own_root = self.settings.image_root / "etc" / "s6-overlay" / "s6-rc.d"
+                    own_names = {u.name for u in initgraph.read_units(own_root)}
                 base_names: set[str] | None = None
-                if base_ref and copy_from_image(self.client, base_ref, "/etc/s6-overlay/s6-rc.d", root / "base"):
+                if (
+                    own_names is None
+                    and base_ref
+                    and copy_from_image(self.client, base_ref, "/etc/s6-overlay/s6-rc.d", root / "base")
+                ):
                     base_names = {u.name for u in initgraph.read_units(root / "base" / "s6-rc.d")}
             tag = self.manifest.release.tag if self.settings.mode == "live" else self.settings.tag
             header = f"{self.manifest.name}:{tag}"
             labelled = layers.base_image_ref(labels, self.manifest.build.base)
             base_images = [initgraph.short_image_name(base_ref or labelled or f"baseimage-{self.manifest.build.base}")]
-            graph = initgraph.build_init_graph(units, header, base_images, base_names)
+            graph = initgraph.build_init_graph(units, header, base_images, base_names, own_names)
             write_json(self.asset("init-graph.<arch>.json"), graph)
             own = sum(1 for u in graph["units"] if u["source"] == "image")
-            return f"{len(units)} units, {own} from this image, base units {'compared' if base_names else 'assumed'}"
+            how = (
+                "own units from the repository"
+                if own_names is not None
+                else ("base units compared" if base_names else "base units assumed")
+            )
+            return f"{len(units)} units, {own} from this image, {how}"
 
         self.step("Init graph", do_initgraph)
 

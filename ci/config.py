@@ -111,6 +111,7 @@ class Settings:
     manifest: Manifest
     out_dir: Path
     previous_packages_url: str | None
+    image_root: Path | None
     log_level: str
     syft_timeout: int
     startup_timeout: int
@@ -189,6 +190,11 @@ def load_settings(env: Mapping[str, str], out_dir: Path = Path("/out")) -> Setti
         raise ConfigError(f"MANIFEST_JSON does not describe a usable manifest: {err}") from err
 
     previous = env.get("PREVIOUS_PACKAGES_URL", "").strip() or None
+    image_root: Path | None = None
+    if raw_root := env.get("IMAGE_ROOT", "").strip():
+        image_root = Path(raw_root)
+        if not image_root.is_dir():
+            raise ConfigError(f"IMAGE_ROOT is not a directory: {raw_root}")
     screenshot = env.get("SCREENSHOT", "true").strip().lower() != "false"
     return Settings(
         image=image,
@@ -197,6 +203,7 @@ def load_settings(env: Mapping[str, str], out_dir: Path = Path("/out")) -> Setti
         manifest=manifest,
         out_dir=out_dir,
         previous_packages_url=previous,
+        image_root=image_root,
         log_level=env.get("CI_LOG_LEVEL", "INFO").strip() or "INFO",
         syft_timeout=_int_env(env, "SYFT_TIMEOUT", manifest.test.sbom_timeout),
         startup_timeout=_int_env(env, "STARTUP_TIMEOUT", manifest.test.startup_timeout),

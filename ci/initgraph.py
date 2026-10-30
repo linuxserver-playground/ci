@@ -1,4 +1,11 @@
-"""The s6-rc init graph: units read from /etc/s6-overlay/s6-rc.d and the d2 diagram in the readme style."""
+"""The s6-rc init graph: units read from /etc/s6-overlay/s6-rc.d and the d2 diagram in the readme style.
+
+A unit is this image's own when the repository ships it (`root/etc/s6-overlay/s6-rc.d/<name>`, the directory the
+workflow mounts as IMAGE_ROOT); every other unit came with a base image, however many bases deep. Without the
+repository, the base image's units are compared when it is in the local store, and the units every root base
+ships are assumed otherwise. Only own units carry their run script: the website reads a base unit's script from
+the base image's own build.
+"""
 
 from __future__ import annotations
 
@@ -8,7 +15,8 @@ from typing import Any
 
 UNIT_TYPES = ("oneshot", "longrun", "bundle")
 
-# Units every ghcr.io/linuxserver/baseimage-* ships. Used when the base image is not available for comparison.
+# Units every root base image ships. The last resort when neither the repository nor the base image is at hand:
+# it cannot see the units of a base built on another base (selkies on ubuntu), which then count as the image's own.
 KNOWN_BASE_UNITS = frozenset(
     {
         "ci-service-check",
@@ -79,17 +87,23 @@ def read_units(root: Path) -> list[Unit]:
     return units
 
 
-def classify(name: str, base_names: frozenset[str] | set[str] | None) -> str:
+def classify(name: str, base_names: frozenset[str] | set[str] | None, own_names: set[str] | None = None) -> str:
+    """`mod`, `image` or `base`: the repository's own units when known (`own_names`), else whatever is not a base
+    unit, from the base image's list when it was compared and the known root-base units otherwise."""
     if name.startswith(("init-mod-", "svc-mod-")):
         return "mod"
+    if own_names is not None:
+        return "image" if name in own_names else "base"
     known = base_names if base_names is not None else KNOWN_BASE_UNITS
     return "base" if name in known else "image"
 
 
-def unit_records(units: list[Unit], base_names: set[str] | None) -> list[dict[str, Any]]:
+def unit_records(
+    units: list[Unit], base_names: set[str] | None, own_names: set[str] | None = None
+) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     for unit in units:
-        source = classify(unit.name, base_names)
+        source = classify(unit.name, base_names, own_names)
         record: dict[str, Any] = {
             "name": unit.name,
             "type": unit.type,
@@ -143,6 +157,10 @@ def short_image_name(ref: str) -> str:
 
 
 def build_init_graph(
-    units: list[Unit], header: str, base_images: list[str], base_names: set[str] | None
+    units: list[Unit],
+    header: str,
+    base_images: list[str],
+    base_names: set[str] | None,
+    own_names: set[str] | None = None,
 ) -> dict[str, Any]:
-    return {"d2": render_d2(units, header, base_images), "units": unit_records(units, base_names)}
+    return {"d2": render_d2(units, header, base_images), "units": unit_records(units, base_names, own_names)}

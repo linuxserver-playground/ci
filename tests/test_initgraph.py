@@ -86,6 +86,40 @@ def test_build_init_graph_without_base_uses_known_units(s6_tree: Path) -> None:
     assert records["init-mod-sonarr-extra"]["source"] == "mod"
 
 
+def test_repository_units_are_the_image_s_own_and_the_rest_a_base_s(s6_tree: Path) -> None:
+    """With the repository's units known, the base comparison and the known list are not consulted: a unit the
+    repository ships is the image's own, anything else (an intermediate base's units included) is a base's."""
+    units = read_units(s6_tree)
+    graph = build_init_graph(
+        units, "sonarr:latest", ["baseimage-alpine:3.22"], None, {"init-sonarr-config", "svc-sonarr"}
+    )
+    records = {u["name"]: u for u in graph["units"]}
+    assert (
+        records["init-sonarr-config"]["source"] == "image"
+        and "mkdir -p /config" in records["init-sonarr-config"]["script"]
+    )
+    assert records["svc-sonarr"]["source"] == "image" and "script" in records["svc-sonarr"]
+    assert records["init-envfile"]["source"] == "base" and "script" not in records["init-envfile"]
+    assert records["user"]["source"] == "base"
+    assert records["init-mod-sonarr-extra"]["source"] == "mod"
+    # A stale comparison list cannot override the repository.
+    wrong = {u.name for u in units}
+    graph = build_init_graph(units, "sonarr:latest", ["baseimage-alpine:3.22"], wrong, {"svc-sonarr"})
+    assert {u["name"] for u in graph["units"] if u["source"] == "image"} == {"svc-sonarr"}
+
+
+def test_a_base_image_owns_every_unit_it_ships(s6_tree: Path) -> None:
+    """A root base image's repository ships the units the known list names, so they are its own, scripts included."""
+    units = read_units(s6_tree)
+    own = {u.name for u in units if not u.name.startswith("init-mod-")}
+    graph = build_init_graph(units, "baseimage-alpine:3.22", ["scratch"], None, own)
+    sources = {u["source"] for u in graph["units"]}
+    assert sources == {"image", "mod"}
+    records = {u["name"]: u for u in graph["units"]}
+    assert records["init-envfile"]["script"] == "#!/usr/bin/with-contenv bash\necho envfile\n"
+    assert graph["units"] == build_init_graph(units, "baseimage-alpine:3.22", ["scratch"], None, own)["units"]
+
+
 def test_short_image_name() -> None:
     assert short_image_name("ghcr.io/linuxserver/baseimage-alpine:3.22@sha256:abc") == "baseimage-alpine:3.22"
     assert short_image_name("baseimage-ubuntu") == "baseimage-ubuntu"

@@ -39,6 +39,11 @@ def test_settings_from_env() -> None:
     assert settings.out_dir == Path("/out")
 
 
+def test_image_root_names_the_repository_root(tmp_path: Path) -> None:
+    assert load_settings(env()).image_root is None
+    assert load_settings(env(IMAGE_ROOT=str(tmp_path))).image_root == tmp_path
+
+
 def test_overrides() -> None:
     settings = load_settings(env(STARTUP_TIMEOUT="30", SYFT_TIMEOUT="120", SCREENSHOT="false", CI_LOG_LEVEL="debug"))
     assert settings.startup_timeout == 30
@@ -58,6 +63,7 @@ def test_overrides() -> None:
         ("MANIFEST_JSON", "{not json", "valid JSON"),
         ("MANIFEST_JSON", '{"schema": 1}', "usable manifest"),
         ("STARTUP_TIMEOUT", "soon", "STARTUP_TIMEOUT"),
+        ("IMAGE_ROOT", "/nowhere/root", "IMAGE_ROOT"),
     ],
 )
 def test_bad_env_is_a_config_error(key: str, value: str, fragment: str) -> None:

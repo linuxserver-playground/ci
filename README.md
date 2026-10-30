@@ -20,6 +20,7 @@ docker run --rm \
   -e MODE="live|dev|pr" \
   -e MANIFEST_JSON="<image.yml as compact JSON>" \
   -e PREVIOUS_PACKAGES_URL="<optional URL of the previous release's package_versions.<arch>.txt>" \
+  -v "$PWD/root":/image-root:ro -e IMAGE_ROOT=/image-root \
   -v "$DUMPER":/usr/local/bin/dumper:ro \
   ghcr.io/linuxserver-playground/ci:latest
 ```
@@ -31,6 +32,7 @@ docker run --rm \
 | `MODE` | yes | `live`, `dev` or `pr`. Recorded in the report; `live` uses `release.tag` in the init diagram header. |
 | `MANIFEST_JSON` | yes | The repo's `image.yml` as JSON. `name`, `build.base`, `release.tag`, `runtime.ports` and the whole `test` section are read. |
 | `PREVIOUS_PACKAGES_URL` | no | The previous release's `package_versions.<arch>.txt`; drives `package_diff.txt`. |
+| `IMAGE_ROOT` | no | The repository's `root/` directory, mounted read-only: the s6 units under its `etc/s6-overlay/s6-rc.d` are this image's own in `init-graph.<arch>.json`, every other unit a base image's. Without it the base image is compared when it is in the daemon, and the known root-base units are assumed otherwise (which mistakes an intermediate base's units, such as selkies', for the image's). Must exist when set. |
 | `CI_LOG_LEVEL` | no | `DEBUG`, `INFO` (default), `WARNING`... |
 | `SYFT_TIMEOUT` | no | Seconds for the syft run. Default `test.sbom_timeout` or 900. |
 | `STARTUP_TIMEOUT` | no | Overrides `test.startup_timeout` (seconds to wait for `[ls.io-init] done.`). |
@@ -62,7 +64,7 @@ Everything goes to `/out`. Names are fixed; `<arch>` is `ARCH`.
 | `layers.<arch>.json` | `bundle.schema.json` `$defs/layer` (array) | One per `RootFS.Layers` entry: diff_id, `created_by` from `docker history`, uncompressed size, `from_base`, `empty`, and compressed digest/size when the registry knows the image. |
 | `package_versions.<arch>.txt` | text | `syft -o table`: the same shape as today's `package_versions.txt`. |
 | `image-config.<arch>.json` | | `docker image inspect` as a single object. |
-| `init-graph.<arch>.json` | `bundle.schema.json` `init_graph` | `{d2, units}`: the s6-rc units with type, `depends_on`, `source` (`base`, `image`, `mod`) and the `run` script for this image's own units; `d2` in the style of the old `init_diagram` readme block. |
+| `init-graph.<arch>.json` | `bundle.schema.json` `init_graph` | `{d2, units}`: the s6-rc units with type, `depends_on`, `source` (`image` for the units the repository ships, see `IMAGE_ROOT`; `base` for every inherited unit, however many bases deep; `mod`) and the `run` script for this image's own units only, so the website reads a base unit's script from the base image's build; `d2` in the style of the old `init_diagram` readme block. |
 
 The tests in `test.<arch>.json`, in order: Container startup, Services, Ports, Web response, Runtime log check,
 Get package info, Create SBOM, File tree, Layers, Init graph, Take screenshot, Runtime probe. Statuses are
